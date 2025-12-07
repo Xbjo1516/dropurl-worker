@@ -1,6 +1,7 @@
 // src/server.js
 import express from "express";
 import cors from "cors";
+
 import { check404 } from "../test/404.js";
 import { checkDuplicate } from "../test/duplicate.js";
 import { checkSeo } from "../test/read-elements.js";
@@ -8,13 +9,15 @@ import { checkSeo } from "../test/read-elements.js";
 import { Client, GatewayIntentBits, Partials } from "discord.js";
 
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
-const DROPURL_API_BASE = process.env.DROPURL_API_BASE;
+const DROPURL_API_BASE =
+  process.env.DROPURL_API_BASE || "https://dropurl.vercel.app";
+
+// ================== Express / Worker ==================
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
-// ---------------- HTTP worker (ให้ DropURL เรียก /run-checks) ----------------
 app.get("/", (_req, res) => {
   res.send("DropURL worker is running");
 });
@@ -51,14 +54,19 @@ app.post("/run-checks", async (req, res) => {
     }
   };
 
+  // 1) 404
   if (normChecks.check404) {
     result.check404 = await safeRun("404", () => check404(urls));
   }
 
+  // 2) Duplicate
   if (normChecks.duplicate) {
-    result.duplicate = await safeRun("duplicate", () => checkDuplicate(urls));
+    result.duplicate = await safeRun("duplicate", () =>
+      checkDuplicate(urls)
+    );
   }
 
+  // 3) SEO
   if (normChecks.seo) {
     result.seo = await safeRun("seo", () => checkSeo(urls));
   }
@@ -71,248 +79,362 @@ app.listen(PORT, () => {
   console.log("DropURL worker listening on port", PORT);
 });
 
-// ======================= Discord Bot helpers =======================
+// ================== Discord Bot – Multi-language ==================
 
-// แปลง/เช็ก URL ที่ผู้ใช้พิมพ์ใน Discord
+// เก็บภาษาของแต่ละ user (in-memory)
+const userLang = {}; // userLang[userId] = "th" | "en"
+
+// template ข้อความสองภาษา
+const MESSAGES = {
+  th: {
+    langSetTh: "ตั้งค่าภาษาเป็น **ไทย** 🇹🇭 เรียบร้อยแล้ว!",
+    langSetEn: "ตั้งค่าภาษาเป็น **อังกฤษ** 🇺🇸 เรียบร้อยแล้ว!",
+    langHelp: "เลือกภาษาได้ด้วยคำสั่ง `!lang th` หรือ `!lang en`",
+    needUrl:
+      "โปรดใส่ URL ด้วยนะ เช่น `!check https://example.com`",
+    invalidUrl:
+      "รูปแบบ URL ไม่ถูกต้องค่ะ ลองใช้แบบนี้ดูนะ `!check https://example.com`",
+    checking: "กำลังตรวจลิงก์นี้ให้คุณนะครับ...\n<${url}>",
+    apiError: "ตรวจลิงก์ไม่สำเร็จ: ${msg}",
+    botError: "⚠️ มีข้อผิดพลาดภายในบอท ลองใหม่อีกครั้งนะครับ",
+    resultTitle: "🔍 ผลตรวจสำหรับ: <${url}>",
+    section404: "• **404 / Reachability**",
+    sectionDup: "• **Duplicate**",
+    sectionSeo: "• **SEO Overview**",
+    noData: "(ไม่มีข้อมูล)",
+    // 404 detail
+    httpStatus: "- สถานะ HTTP: `${status}` ${label}",
+    httpOk: "✅ ปกติ",
+    httpWarn: "⚠️ อาจมีปัญหา",
+    iframeCount: "- Iframe 404: ${count} รายการ",
+    assetCount: "- Asset 404 (รูป / script / css): ${count} รายการ",
+    unreachable:
+      "- ผลรวม: ⚠️ หน้าเว็บเข้าถึงไม่ได้ อาจพิมพ์ URL ผิดหรือเว็บล่ม",
+    // duplicate detail
+    dupError: "⚠️ ตรวจ Duplicate ไม่สำเร็จ: ${msg}",
+    dupNone: "- ยังไม่พบความซ้ำที่น่ากังวล",
+    dupSome: "- พบกลุ่มเนื้อหาซ้ำที่น่าสนใจ ${groups} กลุ่ม (ตัวอย่าง ${sample} รายการ)",
+    // seo detail
+    seoError: "⚠️ วิเคราะห์ SEO ไม่สำเร็จ: ${msg}",
+    seoUnreachable:
+      "- ไม่สามารถวิเคราะห์ SEO ได้เพราะหน้าเว็บเข้าถึงไม่ได้",
+    seoTitle: "- Title: ${ok} (ความยาว ${len} ตัวอักษร)",
+    seoDesc: "- Description: ${ok} (ความยาว ${len} ตัวอักษร)",
+    okWord: "✅ ดี",
+    badWord: "⚠️ ควรปรับ",
+    seoCanonical: "- Canonical: ${yesno}",
+    seoHtmlLang: "- HTML lang: ${yesno}",
+    yes: "✅ มี",
+    no: "⚠️ ไม่มี",
+    h1Summary: "- H1: ${count} ตัว ${extra}",
+    h1ExtraGood: "(โอเค)",
+    h1ExtraNone: "(ควรมีอย่างน้อย 1 ตัว)",
+    h1ExtraMulti: "(มีหลายตัว อาจซ้ำซ้อน)",
+    imgAlt: "- รูปภาพมี alt: ${percent}",
+    imgAltNA: "ไม่มีข้อมูล",
+    socialOg: "- Open Graph: ${yesno}",
+    socialTw: "- Twitter Card: ${yesno}",
+    schema: "- Structured data (schema.org): ${yesno}",
+    linksSummary:
+      "- ลิงก์ทั้งหมด: ${total} (ภายใน ${internal} | ภายนอก ${external})",
+  },
+  en: {
+    langSetTh: "Language set to **Thai** 🇹🇭",
+    langSetEn: "Language set to **English** 🇺🇸",
+    langHelp: "You can change language with `!lang th` or `!lang en`",
+    needUrl: "Please provide a URL, e.g. `!check https://example.com`",
+    invalidUrl:
+      "URL format seems invalid. Try something like `!check https://example.com`",
+    checking: "Checking this URL for you...\n<${url}>",
+    apiError: "Failed to check URL: ${msg}",
+    botError: "⚠️ Bot error occurred, please try again.",
+    resultTitle: "🔍 Scan result for: <${url}>",
+    section404: "• **404 / Reachability**",
+    sectionDup: "• **Duplicate**",
+    sectionSeo: "• **SEO Overview**",
+    noData: "(no data)",
+    httpStatus: "- HTTP status: `${status}` ${label}",
+    httpOk: "✅ OK",
+    httpWarn: "⚠️ Might be problematic",
+    iframeCount: "- Iframe 404: ${count} item(s)",
+    assetCount: "- Asset 404 (images / scripts / css): ${count} item(s)",
+    unreachable:
+      "- Summary: ⚠️ Page not reachable. URL may be wrong or site is down.",
+    dupError: "⚠️ Duplicate check failed: ${msg}",
+    dupNone: "- No concerning duplicates found.",
+    dupSome:
+      "- Found duplicated content groups: ${groups} groups (sample ${sample} URLs)",
+    seoError: "⚠️ SEO analysis failed: ${msg}",
+    seoUnreachable:
+      "- Cannot analyze SEO because the page is not reachable.",
+    seoTitle: "- Title: ${ok} (length ${len} chars)",
+    seoDesc: "- Description: ${ok} (length ${len} chars)",
+    okWord: "✅ Good",
+    badWord: "⚠️ Needs improvement",
+    seoCanonical: "- Canonical: ${yesno}",
+    seoHtmlLang: "- HTML lang: ${yesno}",
+    yes: "✅ Present",
+    no: "⚠️ Missing",
+    h1Summary: "- H1: ${count} element(s) ${extra}",
+    h1ExtraGood: "(looks good)",
+    h1ExtraNone: "(should have at least one)",
+    h1ExtraMulti: "(multiple H1s – might be confusing)",
+    imgAlt: "- Images with alt: ${percent}",
+    imgAltNA: "N/A",
+    socialOg: "- Open Graph: ${yesno}",
+    socialTw: "- Twitter Card: ${yesno}",
+    schema: "- Structured data (schema.org): ${yesno}",
+    linksSummary:
+      "- Links: ${total} total (internal ${internal} | external ${external})",
+  },
+};
+
+function getLangForUser(userId) {
+  return userLang[userId] || "th"; // default ไทย
+}
+
+function tmpl(str, vars) {
+  return str.replace(/\$\{([^}]+)}/g, (_, k) =>
+    vars[k] !== undefined ? String(vars[k]) : ""
+  );
+}
+
+// validate + normalize URL (เติม https:// ถ้าไม่มี)
 function normalizeUrl(input) {
   const raw = String(input || "").trim();
-  if (!raw) return null;
+  if (!raw) return { ok: false };
 
-  let s = raw;
-  if (!/^https?:\/\//i.test(s)) {
-    s = "https://" + s;
-  }
+  const withProto =
+    raw.startsWith("http://") || raw.startsWith("https://")
+      ? raw
+      : `https://${raw}`;
 
   try {
-    // ถ้า new URL ไม่ผ่าน แสดงว่า URL ผิดรูป
-    // (hostname ต้องมีอย่างน้อยจุดเดียว เช่น example.com)
-    const u = new URL(s);
-    if (!u.hostname || !u.hostname.includes(".")) return null;
-    return u.toString();
+    const u = new URL(withProto);
+    return { ok: true, url: u.toString() };
   } catch {
-    return null;
+    return { ok: false };
   }
 }
 
-// สร้างข้อความรายงานแบบละเอียดจาก result ของ /api/check-url
-function buildDiscordReport(url, apiResult) {
+// สร้างรายงาน Discord จากผล API (detail คล้ายตาราง)
+function buildDiscordReport(url, apiResult, lang) {
+  const M = MESSAGES[lang];
   const lines = [];
-  lines.push(`🔍 **ผลตรวจสำหรับ:** <${url}>`);
 
-  const r404Block = apiResult?.check404;
-  const rDupBlock = apiResult?.duplicate;
-  const rSeoBlock = apiResult?.seo;
+  const r404 = apiResult.check404?.results?.[0];
+  const rDup = apiResult.duplicate;
+  const rSeo = apiResult.seo?.results?.[0];
 
-  // ---------------- 1) 404 ----------------
-  if (
-    r404Block &&
-    Array.isArray(r404Block.results) &&
-    r404Block.results.length
-  ) {
-    const item = r404Block.results[0];
-    const status = item.pageStatus ?? null;
-    const hasIframe404 = item.iframe404s?.length > 0;
-    const hasAsset404 = item.assetFailures?.length > 0;
-    const hasError =
+  lines.push(tmpl(M.resultTitle, { url }));
+
+  // ----- 404 -----
+  lines.push(M.section404);
+  if (r404) {
+    const status = r404.pageStatus ?? "no-response";
+    const isBad =
+      status === 0 ||
+      status === null ||
       status === 404 ||
       status === 500 ||
-      status === 0 ||
-      hasIframe404 ||
-      hasAsset404 ||
-      !!item.error;
+      status === "no-response";
 
-    lines.push("");
     lines.push(
-      `**• 404** – ${hasError ? "⚠️ มีปัญหาบางอย่าง" : "✅ ไม่พบปัญหาสำคัญ"}`
+      tmpl(M.httpStatus, {
+        status,
+        label: isBad ? M.httpWarn : M.httpOk,
+      })
     );
 
-    const detail = [];
-    if (status != null) {
-      detail.push(`- main page HTTP status: ${status}`);
-    } else {
-      detail.push("- main page: ไม่มี HTTP response (อาจโหลดไม่สำเร็จ)");
+    const iframeCount = Array.isArray(r404.iframe404s)
+      ? r404.iframe404s.length
+      : 0;
+    const assetCount = Array.isArray(r404.assetFailures)
+      ? r404.assetFailures.length
+      : 0;
+
+    lines.push(
+      tmpl(M.iframeCount, {
+        count: iframeCount,
+      })
+    );
+    lines.push(
+      tmpl(M.assetCount, {
+        count: assetCount,
+      })
+    );
+
+    if (r404.error || isBad) {
+      lines.push(M.unreachable);
     }
-
-    if (item.error) {
-      detail.push(`- error: ${item.error}`);
-    }
-
-    if (hasIframe404) {
-      detail.push(`- iframe 404: ${item.iframe404s.length} รายการ`);
-    }
-
-    if (hasAsset404) {
-      detail.push(`- asset 404 ภายใน iframe: ${item.assetFailures.length} รายการ`);
-    }
-
-    if (!detail.length) detail.push("- ไม่มีประเด็นสำคัญ");
-
-    lines.push("```");
-    lines.push(detail.join("\n"));
-    lines.push("```");
   } else {
-    lines.push("");
-    lines.push("**• 404** – (ไม่มีข้อมูลการทดสอบ)");
+    lines.push(`  ${M.noData}`);
   }
 
-  // ---------------- 2) Duplicate ----------------
-  if (rDupBlock) {
-    if (rDupBlock.error) {
-      lines.push("");
-      lines.push(
-        `**• Duplicate** – ⚠️ ${rDupBlock.errorMessage || "ตรวจไม่ได้"}`
-      );
-    } else if (Array.isArray(rDupBlock.results)) {
-      const items = rDupBlock.results;
-      let hasDup = false;
-      const detail = [];
+  // ----- Duplicate -----
+  lines.push("");
+  lines.push(M.sectionDup);
+  if (!rDup) {
+    lines.push(`  ${M.noData}`);
+  } else if (rDup.error) {
+    lines.push(
+      tmpl(M.dupError, {
+        msg: rDup.errorMessage || rDup.rawError || "unknown",
+      })
+    );
+  } else if (Array.isArray(rDup.results) && rDup.results.length > 0) {
+    // นับกลุ่ม duplicates คร่าว ๆ
+    let groupCount = 0;
+    let sampleUrls = new Set();
 
-      items.forEach((it) => {
-        const list = Array.isArray(it.duplicates) ? it.duplicates : [];
-        if (list.length > 1) {
-          hasDup = true;
-          detail.push(`- ${it.url || "ไม่ทราบ URL"}: พบ ${list.length} รายการซ้ำ`);
-          list.slice(0, 5).forEach((u) => {
-            detail.push(`   • ${u}`);
-          });
-        }
-      });
-
-      lines.push("");
-      lines.push(
-        `**• Duplicate** – ${hasDup
-          ? "⚠️ พบเนื้อหาหรือไฟล์ที่ซ้ำกันหลายที่"
-          : "✅ ยังไม่พบความซ้ำที่น่ากังวล"
-        }`
-      );
-
-      lines.push("```");
-      if (detail.length) {
-        lines.push(detail.join("\n"));
-      } else {
-        lines.push("- ไม่พบกลุ่มลิงก์/ไฟล์ที่ซ้ำกันชัดเจน");
+    rDup.results.forEach((item) => {
+      if (Array.isArray(item.frames)) {
+        item.frames.forEach((f) => {
+          if (Array.isArray(f.duplicates) && f.duplicates.length > 1) {
+            groupCount++;
+            f.duplicates.slice(0, 5).forEach((u) => sampleUrls.add(u));
+          }
+        });
+      } else if (
+        Array.isArray(item.duplicates) &&
+        item.duplicates.length > 1
+      ) {
+        groupCount++;
+        item.duplicates.slice(0, 5).forEach((u) => sampleUrls.add(u));
       }
-      lines.push("```");
+    });
+
+    if (groupCount === 0) {
+      lines.push(M.dupNone);
     } else {
-      lines.push("");
-      lines.push("**• Duplicate** – (ไม่มีข้อมูลการทดสอบ)");
+      lines.push(
+        tmpl(M.dupSome, {
+          groups: groupCount,
+          sample: sampleUrls.size,
+        })
+      );
     }
   } else {
-    lines.push("");
-    lines.push("**• Duplicate** – (ไม่ได้เปิดการทดสอบ)");
+    lines.push(M.dupNone);
   }
 
-  // ---------------- 3) SEO ----------------
-  if (
-    rSeoBlock &&
-    Array.isArray(rSeoBlock.results) &&
-    rSeoBlock.results.length
-  ) {
-    const item = rSeoBlock.results[0];
-    const reachable = item.reachable ?? true;
-    const meta = item.meta || {};
-    const p1 = meta.priority1 || {};
-    const other = meta.other || {};
-    const canonical = meta.canonical || {};
-    const lang = meta.lang || {};
-    const headings = meta.headings || {};
-    const schema = meta.schema || {};
-    const links = meta.links || {};
-    const hints = meta.seoHints || {};
-
-    const hasIssue =
-      !reachable ||
-      !hints.titleLengthOk ||
-      !hints.descriptionLengthOk ||
-      !hints.hasCanonical ||
-      !hints.hasHtmlLang ||
-      !hints.hasH1 ||
-      hints.multipleH1;
-
-    lines.push("");
+  // ----- SEO -----
+  lines.push("");
+  lines.push(M.sectionSeo);
+  if (!rSeo) {
+    lines.push(`  ${M.noData}`);
+  } else if (rSeo.error) {
     lines.push(
-      `**• SEO** – ${hasIssue ? "⚠️ มีจุดที่ควรปรับปรุง" : "✅ ภาพรวมถือว่าโอเค"
-      }`
+      tmpl(M.seoError, {
+        msg: rSeo.errorMessage || rSeo.rawError || "unknown",
+      })
+    );
+  } else if (rSeo.reachable === false) {
+    lines.push(M.seoUnreachable);
+  } else if (rSeo.meta && rSeo.meta.seoHints) {
+    const h = rSeo.meta.seoHints;
+    const meta = rSeo.meta;
+
+    // title / description
+    lines.push(
+      tmpl(M.seoTitle, {
+        ok: h.titleLengthOk ? M.okWord : M.badWord,
+        len: h.titleLength ?? 0,
+      })
+    );
+    lines.push(
+      tmpl(M.seoDesc, {
+        ok: h.descriptionLengthOk ? M.okWord : M.badWord,
+        len: h.descriptionLength ?? 0,
+      })
     );
 
-    const detail = [];
-
-    detail.push("Basic");
-    detail.push(`- title: ${p1.title || "⛔ ไม่มี"}`);
-    detail.push(`- description: ${p1.description || "⛔ ไม่มี"}`);
-    detail.push(
-      `- title length: ${hints.titleLength ?? 0
-      } chars (${hints.titleLengthOk ? "เหมาะสม" : "ควรปรับ"})`
+    // canonical + html lang
+    lines.push(
+      tmpl(M.seoCanonical, {
+        yesno: h.hasCanonical ? M.yes : M.no,
+      })
     );
-    detail.push(
-      `- description length: ${hints.descriptionLength ?? 0
-      } chars (${hints.descriptionLengthOk ? "เหมาะสม" : "ควรปรับ"})`
+    lines.push(
+      tmpl(M.seoHtmlLang, {
+        yesno: h.hasHtmlLang ? M.yes : M.no,
+      })
     );
 
-    detail.push("");
-    detail.push("Indexing");
-    detail.push(
-      `- canonical: ${canonical.status || (hints.hasCanonical ? "✅ มี" : "⛔ ไม่มี")}`
-    );
-    detail.push(
-      `- html lang: ${lang.htmlLang ? `✅ ${lang.htmlLang}` : hints.hasHtmlLang ? "✅ ตั้งค่าแล้ว" : "⛔ ไม่มี"
-      }`
-    );
-    detail.push(`- robots.txt: ${other["robots.txt"] || "⛔ Not found"}`);
-    detail.push(`- sitemap.xml: ${other["sitemap.xml"] || "⛔ Not found"}`);
+    // H1
+    const h1Count = meta.headings?.h1Count ?? 0;
+    let extra;
+    if (h1Count === 0) extra = M.h1ExtraNone;
+    else if (h1Count === 1) extra = M.h1ExtraGood;
+    else extra = M.h1ExtraMulti;
 
-    detail.push("");
-    detail.push("Structure");
-    detail.push(
-      `- H1: ${headings.h1Count ?? 0} (${hints.hasH1 ? "มี" : "ไม่มี"})`
+    lines.push(
+      tmpl(M.h1Summary, {
+        count: h1Count,
+        extra,
+      })
     );
-    if (hints.multipleH1) {
-      detail.push("- ⚠️ มี H1 มากกว่า 1 ตัว");
+
+    // image alt coverage
+    if (
+      h.imageAltCoverage !== null &&
+      typeof h.imageAltCoverage === "number"
+    ) {
+      const percent = Math.round(h.imageAltCoverage * 100);
+      lines.push(
+        tmpl(M.imgAlt, {
+          percent: `${percent}%`,
+        })
+      );
+    } else {
+      lines.push(
+        tmpl(M.imgAlt, {
+          percent: M.imgAltNA,
+        })
+      );
     }
-    detail.push(
-      `- Headings: H1=${headings.h1Count ?? 0}, H2=${headings.h2Count ?? 0}, H3=${headings.h3Count ?? 0}`
-    );
 
-    detail.push("");
-    detail.push("Social / Schema / Links");
-    detail.push(
-      `- OpenGraph: ${hints.hasOpenGraph ? "✅ มี" : "⛔ ไม่มี"}`
-    );
-    detail.push(
-      `- Twitter Card: ${hints.hasTwitterCard ? "✅ มี" : "⛔ ไม่มี"}`
-    );
-    detail.push(
-      `- Schema.org: ${schema.types?.length ? "✅ " + schema.types.join(", ") : "⛔ ไม่พบ"
-      }`
-    );
-    detail.push(
-      `- links: total=${links.total ?? 0}, internal=${links.internal ?? 0}, external=${links.external ?? 0}`
-    );
-
-    lines.push("```");
-    lines.push(detail.join("\n"));
-    lines.push("```");
-  } else if (rSeoBlock && rSeoBlock.error) {
-    lines.push("");
+    // Social tags
     lines.push(
-      `**• SEO** – ⚠️ ${rSeoBlock.errorMessage || "วิเคราะห์ SEO ไม่สำเร็จ"}`
+      tmpl(M.socialOg, {
+        yesno: h.hasOpenGraph ? M.yes : M.no,
+      })
+    );
+    lines.push(
+      tmpl(M.socialTw, {
+        yesno: h.hasTwitterCard ? M.yes : M.no,
+      })
+    );
+
+    // Schema
+    lines.push(
+      tmpl(M.schema, {
+        yesno: h.hasSchema ? M.yes : M.no,
+      })
+    );
+
+    // Links summary
+    const links = meta.links || {};
+    lines.push(
+      tmpl(M.linksSummary, {
+        total: links.total ?? 0,
+        internal: links.internal ?? 0,
+        external: links.external ?? 0,
+      })
     );
   } else {
-    lines.push("");
-    lines.push("**• SEO** – (ไม่มีข้อมูลการทดสอบ)");
+    lines.push(`  ${M.noData}`);
   }
 
   return lines.join("\n");
 }
 
-// ======================= Discord Bot main =======================
+// ================== Discord Bot setup ==================
+
 function setupDiscordBot() {
   if (!DISCORD_BOT_TOKEN) {
     console.log("DISCORD_BOT_TOKEN is not set, bot will not start.");
     return;
-  }
-  if (!DROPURL_API_BASE) {
-    console.log("DROPURL_API_BASE is not set, bot will not call DropURL API.");
   }
 
   const client = new Client({
@@ -332,56 +454,88 @@ function setupDiscordBot() {
     try {
       if (message.author.bot) return;
 
-      const content = message.content.trim();
-      if (!content.toLowerCase().startsWith("!check ")) return;
+      const raw = message.content.trim();
+      const lower = raw.toLowerCase();
 
-      const rawUrl = content.slice("!check ".length).trim();
-      const normalized = normalizeUrl(rawUrl);
+      // ---------- เปลี่ยนภาษา: !lang th / !lang en ----------
+      if (lower.startsWith("!lang")) {
+        const parts = lower.split(/\s+/);
+        const lang = parts[1];
 
-      if (!normalized) {
+        if (!lang || !["th", "en"].includes(lang)) {
+          return message.reply(
+            "Available languages: `th`, `en`"
+          );
+        }
+
+        userLang[message.author.id] = lang;
+
+        const M = MESSAGES[lang];
         await message.reply(
-          "รูปแบบ URL ดูจะไม่ถูกต้องนะครับ 🙏\n" +
-          "ตัวอย่างที่ถูกต้อง: `!check https://example.com` หรือ `!check example.com`"
+          lang === "th" ? M.langSetTh : M.langSetEn
         );
+        await message.reply(M.langHelp);
         return;
       }
 
+      // ---------- เช็ค URL: !check <url> ----------
+      if (!lower.startsWith("!check ")) return;
+
+      const lang = getLangForUser(message.author.id);
+      const M = MESSAGES[lang];
+
+      const urlPart = raw.slice("!check ".length).trim();
+      if (!urlPart) {
+        await message.reply(M.needUrl);
+        return;
+      }
+
+      const norm = normalizeUrl(urlPart);
+      if (!norm.ok || !norm.url) {
+        await message.reply(M.invalidUrl);
+        return;
+      }
+      const url = norm.url;
+
       const waitingMsg = await message.reply(
-        `กำลังตรวจลิงก์ให้คุณนะครับ...\n<${normalized}>`
+        tmpl(M.checking, { url })
       );
 
-      const apiBase = DROPURL_API_BASE || "https://dropurl.vercel.app";
-      const resp = await fetch(`${apiBase}/api/check-url`, {
+      // เรียก DropURL API ที่ production
+      const resp = await fetch(`${DROPURL_API_BASE}/api/check-url`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          urls: [normalized],
+          urls: [url],
           checks: { all: true },
         }),
       });
 
-      if (!resp.ok) {
+      let data;
+      try {
+        data = await resp.json();
+      } catch {
+        data = null;
+      }
+
+      if (!resp.ok || !data || data.error) {
+        const msg =
+          data?.errorMessage ||
+          `status ${resp.status}`;
         await waitingMsg.edit(
-          `⚠️ เรียก API ไม่สำเร็จ: HTTP ${resp.status} ${resp.statusText}`
+          tmpl(M.apiError, { msg })
         );
         return;
       }
 
-      const data = await resp.json();
-
-      if (data.error) {
-        await waitingMsg.edit(
-          `⚠️ ตรวจลิงก์ไม่สำเร็จ: ${data.errorMessage || "unknown error"}`
-        );
-        return;
-      }
-
-      const report = buildDiscordReport(normalized, data.result || {});
+      const report = buildDiscordReport(url, data.result || {}, lang);
       await waitingMsg.edit(report);
     } catch (err) {
       console.error("bot messageCreate error:", err);
+      const lang = getLangForUser(message.author?.id || "");
+      const M = MESSAGES[lang];
       try {
-        await message.reply("⚠️ มีข้อผิดพลาดภายในบอท ลองใหม่อีกครั้งนะครับ");
+        await message.reply(M.botError);
       } catch {
         // ignore
       }
