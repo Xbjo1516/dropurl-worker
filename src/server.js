@@ -4,13 +4,15 @@ import cors from "cors";
 import { check404 } from "../test/404.js";
 import { checkDuplicate } from "../test/duplicate.js";
 import { checkSeo } from "../test/read-elements.js";
-
 import { Client, GatewayIntentBits, Partials } from "discord.js";
 
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const DROPURL_API_BASE = process.env.DROPURL_API_BASE;
 
-// ---------- Express worker (404 / Duplicate / SEO) ----------
+// --------------------------------------
+//  Express worker (404 / Duplicate / SEO)
+// --------------------------------------
+
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
@@ -56,13 +58,63 @@ app.post("/run-checks", async (req, res) => {
   }
 
   if (normChecks.duplicate) {
-    result.duplicate = await safeRun("duplicate", () =>
-      checkDuplicate(urls)
-    );
+    result.duplicate = await safeRun("duplicate", () => checkDuplicate(urls));
   }
 
   if (normChecks.seo) {
     result.seo = await safeRun("seo", () => checkSeo(urls));
+  }
+
+  // สร้าง duplicateSummary ไว้ให้ frontend + bot ใช้ (ถ้ามีผล duplicate)
+  try {
+    const dupRes = result.duplicate;
+    const items =
+      dupRes?.results && Array.isArray(dupRes.results) ? dupRes.results : [];
+
+    const hashToUrls = {};
+    for (const item of items) {
+      // จาก test/duplicate.js เรามี frames[].hash + urls
+      if (Array.isArray(item.frames)) {
+        for (const f of item.frames) {
+          if (!f || !f.hash) continue;
+          if (!hashToUrls[f.hash]) hashToUrls[f.hash] = new Set();
+          if (Array.isArray(f.duplicates)) {
+            f.duplicates.forEach((u) => u && hashToUrls[f.hash].add(String(u)));
+          }
+        }
+      }
+      // debug.sampleGroups (ถ้ามี)
+      if (item.debug && Array.isArray(item.debug.sampleGroups)) {
+        for (const sg of item.debug.sampleGroups) {
+          if (!sg || !sg.hash || !Array.isArray(sg.urls)) continue;
+          if (!hashToUrls[sg.hash]) hashToUrls[sg.hash] = new Set();
+          sg.urls.forEach((u) => u && hashToUrls[sg.hash].add(String(u)));
+        }
+      }
+    }
+
+    const crossPageDuplicates = [];
+    for (const [hash, setUrls] of Object.entries(hashToUrls)) {
+      const arr = Array.from(setUrls);
+      if (arr.length > 1) {
+        crossPageDuplicates.push({ hash, urls: arr });
+      }
+    }
+
+    const detected =
+      items.some(
+        (it) =>
+          (Array.isArray(it.frames) && it.frames.length > 0) ||
+          (Array.isArray(it.duplicates) && it.duplicates.length > 0)
+      ) || crossPageDuplicates.length > 0;
+
+    result.duplicateSummary = {
+      detected,
+      itemsCount: items.length,
+      crossPageDuplicates,
+    };
+  } catch (e) {
+    console.log("duplicateSummary build failed (non-fatal):", e);
   }
 
   return res.json({ error: false, result });
@@ -73,17 +125,23 @@ app.listen(PORT, () => {
   console.log("DropURL worker listening on port", PORT);
 });
 
-// ---------- Discord Bot ----------
+// ----------------------
+// Discord Bot + i18n
+// ----------------------
 
-// ภาษา per-user ใน memory
-const userLang = new Map(); // userId -> "th" | "en"
+// language per-user (userId -> "th" | "en")
+const userLang = new Map();
 
+/**
+ * ข้อความ 2 ภาษา
+ */
 const TEXT = {
   th: {
     langSet: "เปลี่ยนภาษาเป็นภาษาไทยแล้ว ✅",
     langUsage: "ใช้คำสั่ง `!lang th` หรือ `!lang en` เพื่อเปลี่ยนภาษา",
     needUrl: "โปรดใส่ URL ด้วยนะ เช่น `!check https://example.com`",
-    invalidUrl: "รูปแบบ URL ดูไม่ถูกต้องเลย ลองใส่แบบ `https://example.com` อีกครั้งนะ",
+    invalidUrl:
+      "รูปแบบ URL ดูไม่ถูกต้องเลย ลองใส่แบบ `https://example.com` อีกครั้งนะ",
     checking: (url) => `กำลังตรวจลิงก์นี้ให้คุณนะครับ...\n<${url}>`,
     checkFailed: (msg) => `⚠️ ตรวจลิงก์ไม่สำเร็จ: ${msg}`,
     botError: "⚠️ มีข้อผิดพลาดภายในบอท ลองใหม่อีกครั้งนะครับ",
@@ -92,36 +150,34 @@ const TEXT = {
     // section titles
     s404_ok: "404 – ✅ ไม่พบปัญหาสำคัญ",
     s404_warn: "404 – ⚠️ อาจมีปัญหา 404 / โหลดไม่สำเร็จ",
-
     sDup_ok: "Duplicate – ✅ ยังไม่พบความซ้ำที่น่ากังวล",
     sDup_warn: "Duplicate – ⚠️ พบลิงก์หรือไฟล์ที่มีเนื้อหาซ้ำกันหลายที่",
     sDup_error: "Duplicate – ⚠️ ตรวจ Duplicate ไม่สำเร็จ",
-
     sSeo_ok: "SEO – ✅ โดยรวมค่อนข้างดี",
     sSeo_warn: "SEO – ⚠️ มีจุดที่ควรปรับปรุง",
-
     noData: "(ไม่มีข้อมูล)",
 
-    // within code block
+    // block titles
     basic: "Basic",
     indexing: "Indexing",
     structure: "Structure",
     social: "Social / Schema / Links",
 
-    // misc labels
+    dupSummaryTitle: "Duplicate summary",
+    dupGroupsTitle: "Groups (ตัวอย่าง)",
+    dupNoGroup:
+      "ไม่พบกลุ่มเนื้อหาซ้ำระหว่างหลายเพจ (cross-page duplicate)",
+
+    // labels
     mainStatus: "main page HTTP status",
     iframe404: (n) => `iframe 404: ${n} รายการ`,
     asset404: (n) => `asset 404 ใน iframe: ${n} รายการ`,
-
     titleLen: (len, ok) =>
       `title length: ${len} chars${ok ? "" : " (ควรปรับ)"}`,
     descLen: (len, ok) =>
       `description length: ${len} chars${ok ? "" : " (ควรปรับ)"}`,
-
     h1Line: (c) => `H1: ${c} (${c === 0 ? "ไม่มี" : ""})`,
-    headingsLine: (h1, h2, h3) =>
-      `Headings: H1=${h1}, H2=${h2}, H3=${h3}`,
-
+    headingsLine: (h1, h2, h3) => `Headings: H1=${h1}, H2=${h2}, H3=${h3}`,
     ogLine: (has) => `OpenGraph: ${has ? "✅ มี" : "⛔ ไม่มี"}`,
     twLine: (has) => `Twitter Card: ${has ? "✅ มี" : "⛔ ไม่มี"}`,
     schemaLine: (types) =>
@@ -129,8 +185,9 @@ const TEXT = {
         ? `Schema.org: ✅ ${types.join(", ")}`
         : "Schema.org: ⛔ ไม่พบ",
     linksLine: (l) =>
-      `links: total=${l.total || 0}, internal=${l.internal || 0}, external=${l.external || 0}`,
-
+      `links: total=${l.total || 0}, internal=${l.internal || 0}, external=${
+        l.external || 0
+      }`,
     unreachable: "URL not reachable",
   },
 
@@ -138,7 +195,8 @@ const TEXT = {
     langSet: "Language set to English ✅",
     langUsage: "Use `!lang th` or `!lang en` to change language.",
     needUrl: "Please provide a URL, e.g. `!check https://example.com`",
-    invalidUrl: "This doesn't look like a valid URL. Try something like `https://example.com`.",
+    invalidUrl:
+      "This doesn't look like a valid URL. Try something like `https://example.com`.",
     checking: (url) => `Checking this URL for you...\n<${url}>`,
     checkFailed: (msg) => `⚠️ Failed to check URL: ${msg}`,
     botError: "⚠️ Bot internal error, please try again.",
@@ -146,14 +204,11 @@ const TEXT = {
 
     s404_ok: "404 – ✅ No critical issues detected",
     s404_warn: "404 – ⚠️ Possible 404 / loading issues",
-
     sDup_ok: "Duplicate – ✅ No worrying duplicates found",
     sDup_warn: "Duplicate – ⚠️ Found duplicated content/assets",
     sDup_error: "Duplicate – ⚠️ Duplicate scan failed",
-
     sSeo_ok: "SEO – ✅ Overall looks good",
     sSeo_warn: "SEO – ⚠️ There are issues to improve",
-
     noData: "(no data)",
 
     basic: "Basic",
@@ -161,19 +216,19 @@ const TEXT = {
     structure: "Structure",
     social: "Social / Schema / Links",
 
+    dupSummaryTitle: "Duplicate summary",
+    dupGroupsTitle: "Groups (sample)",
+    dupNoGroup: "No cross-page duplicate groups detected.",
+
     mainStatus: "main page HTTP status",
     iframe404: (n) => `iframe 404: ${n} item(s)`,
     asset404: (n) => `iframe asset 404: ${n} item(s)`,
-
     titleLen: (len, ok) =>
       `title length: ${len} chars${ok ? "" : " (should be adjusted)"}`,
     descLen: (len, ok) =>
       `description length: ${len} chars${ok ? "" : " (should be adjusted)"}`,
-
     h1Line: (c) => `H1: ${c} (${c === 0 ? "none" : ""})`,
-    headingsLine: (h1, h2, h3) =>
-      `Headings: H1=${h1}, H2=${h2}, H3=${h3}`,
-
+    headingsLine: (h1, h2, h3) => `Headings: H1=${h1}, H2=${h2}, H3=${h3}`,
     ogLine: (has) => `OpenGraph: ${has ? "✅ present" : "⛔ missing"}`,
     twLine: (has) => `Twitter Card: ${has ? "✅ present" : "⛔ missing"}`,
     schemaLine: (types) =>
@@ -181,30 +236,22 @@ const TEXT = {
         ? `Schema.org: ✅ ${types.join(", ")}`
         : "Schema.org: ⛔ not found",
     linksLine: (l) =>
-      `links: total=${l.total || 0}, internal=${l.internal || 0}, external=${l.external || 0}`,
-
+      `links: total=${l.total || 0}, internal=${l.internal || 0}, external=${
+        l.external || 0
+      }`,
     unreachable: "URL not reachable",
   },
 };
 
-function buildReport({ r404, rDup, rSeo, url, lang }) {
+/**
+ * สร้างข้อความรายงานสรุป เหมือนตารางผลในเว็บ แต่ในรูปแบบโค้ดบล็อก
+ */
+function buildReport({ r404, rDup, dupSummary, rSeo, url, lang }) {
   const t = TEXT[lang] || TEXT.th;
   const lines = [];
 
   lines.push(t.header(url));
   lines.push(""); // blank line
-
-  // ==== สถานะสำหรับตารางสรุป ====
-  let status404Kind = "nodata"; // ok | warn | error | nodata
-  let statusDupKind = "nodata";
-  let statusSeoKind = "nodata";
-
-  const tableStatusText = {
-    ok: lang === "th" ? "✅ ปกติ" : "✅ OK",
-    warn: lang === "th" ? "⚠️ พบปัญหา" : "⚠️ Issue",
-    error: lang === "th" ? "⛔ ผิดพลาด" : "⛔ Error",
-    nodata: lang === "th" ? "— ไม่มีข้อมูล —" : "— no data —",
-  };
 
   // ---------- 404 ----------
   if (r404) {
@@ -221,39 +268,12 @@ function buildReport({ r404, rDup, rSeo, url, lang }) {
       !hasIframe404 &&
       !hasAsset404;
 
-    status404Kind = ok404 ? "ok" : "warn";
-
-    // bullet เดิม (สรุป)
     lines.push(`• ${ok404 ? t.s404_ok : t.s404_warn}`);
-    lines.push(`  - ${t.mainStatus}: ${status}`);
-    if (hasIframe404) {
-      lines.push(`  - ${t.iframe404(r404.iframe404s.length)}`);
-    }
-    if (hasAsset404) {
-      lines.push(`  - ${t.asset404(r404.assetFailures.length)}`);
-    }
-
-    // กรอบแบบ SEO
     lines.push("```");
-    lines.push("404");
-    lines.push("------");
+    lines.push(t.basic);
     lines.push(`- ${t.mainStatus}: ${status}`);
-    if (hasIframe404) {
-      lines.push(`- ${t.iframe404(r404.iframe404s.length)}`);
-    } else {
-      lines.push(
-        lang === "th" ? "- iframe 404: ไม่มี" : "- iframe 404: none"
-      );
-    }
-    if (hasAsset404) {
-      lines.push(`- ${t.asset404(r404.assetFailures.length)}`);
-    } else {
-      lines.push(
-        lang === "th"
-          ? "- iframe asset 404: ไม่มี"
-          : "- iframe asset 404: none"
-      );
-    }
+    lines.push(`- ${t.iframe404(hasIframe404 ? r404.iframe404s.length : 0)}`);
+    lines.push(`- ${t.asset404(hasAsset404 ? r404.assetFailures.length : 0)}`);
     lines.push("```");
   } else {
     lines.push(`• 404 – ${t.noData}`);
@@ -262,72 +282,49 @@ function buildReport({ r404, rDup, rSeo, url, lang }) {
   lines.push(""); // blank line
 
   // ---------- Duplicate ----------
-  let hasDup = false;
-
   if (rDup) {
     if (rDup.error) {
-      statusDupKind = "error";
       lines.push(`• ${t.sDup_error}`);
-    } else if (Array.isArray(rDup.results) && rDup.results.length > 0) {
-      hasDup = rDup.results.some(
-        (it) => Array.isArray(it.duplicates) && it.duplicates.length > 1
-      );
-      statusDupKind = hasDup ? "warn" : "ok";
-      lines.push(`• ${hasDup ? t.sDup_warn : t.sDup_ok}`);
     } else {
-      statusDupKind = "ok";
-      lines.push(`• ${t.sDup_ok}`);
-    }
+      const summary = dupSummary || {};
+      const detected = !!summary.detected;
+      const groups = Array.isArray(summary.crossPageDuplicates)
+        ? summary.crossPageDuplicates
+        : [];
 
-    // กรอบแบบ SEO
-    lines.push("```");
-    lines.push("Duplicate");
-    lines.push("---------");
+      lines.push(`• ${detected ? t.sDup_warn : t.sDup_ok}`);
 
-    if (rDup.error) {
+      lines.push("```");
+      lines.push(t.dupSummaryTitle);
       lines.push(
-        `- ${lang === "th" ? "สถานะ" : "status"
-        }: ERROR (${rDup.errorMessage || t.noData})`
+        `- pages scanned: ${summary.itemsCount ?? (rDup.results || []).length}`
       );
-    } else if (Array.isArray(rDup.results) && rDup.results.length > 0) {
-      const first = rDup.results[0];
-      const dupCount = Array.isArray(first.duplicates)
-        ? first.duplicates.length
-        : 0;
+      lines.push(`- groups with duplicates: ${groups.length}`);
 
-      lines.push(
-        `- URL: ${first.url || url || (lang === "th" ? "ไม่ระบุ" : "n/a")}`
-      );
-      lines.push(
-        `- ${lang === "th" ? "จำนวนไฟล์/หน้าเนื้อหาซ้ำ" : "duplicate items"
-        }: ${dupCount}`
-      );
+      lines.push("");
+      lines.push(t.dupGroupsTitle);
 
-      if (dupCount > 0) {
-        lines.push("");
-        lines.push(
-          lang === "th" ? "รายการที่ซ้ำ:" : "Duplicated resources:"
-        );
-        first.duplicates.slice(0, 10).forEach((u, idx) => {
-          lines.push(`  ${idx + 1}. ${u}`);
-        });
-        if (dupCount > 10) {
+      if (!groups.length) {
+        lines.push(`- ${t.dupNoGroup}`);
+      } else {
+        groups.slice(0, 3).forEach((g, idx) => {
+          const urls = Array.isArray(g.urls) ? g.urls : [];
           lines.push(
-            lang === "th"
-              ? `  ... และอีก ${dupCount - 10} รายการ`
-              : `  ... and ${dupCount - 10} more`
+            `- #${idx + 1}: ${urls.length} URL(s) (hash: ${
+              g.hash ? g.hash.slice(0, 8) : "n/a"
+            })`
           );
+          urls.slice(0, 4).forEach((u) => {
+            lines.push(`    • ${u}`);
+          });
+        });
+        if (groups.length > 3) {
+          lines.push(`- ... (${groups.length - 3} more group(s))`);
         }
       }
-    } else {
-      lines.push(
-        lang === "th"
-          ? "- ไม่พบรายการซ้ำในข้อมูลที่ส่งมา"
-          : "- no duplicates in the given data"
-      );
-    }
 
-    lines.push("```");
+      lines.push("```");
+    }
   } else {
     lines.push(`• Duplicate – ${t.noData}`);
   }
@@ -335,8 +332,6 @@ function buildReport({ r404, rDup, rSeo, url, lang }) {
   lines.push(""); // blank line
 
   // ---------- SEO ----------
-  let warnSeo = false;
-
   if (rSeo && rSeo.meta) {
     const meta = rSeo.meta;
     const h = meta.seoHints || {};
@@ -345,7 +340,7 @@ function buildReport({ r404, rDup, rSeo, url, lang }) {
     const links = meta.links || {};
     const langInfo = meta.lang || {};
 
-    warnSeo =
+    const warnSeo =
       !h.titleLengthOk ||
       !h.descriptionLengthOk ||
       !h.hasCanonical ||
@@ -356,12 +351,10 @@ function buildReport({ r404, rDup, rSeo, url, lang }) {
       !h.hasTwitterCard ||
       !h.hasSchema;
 
-    statusSeoKind = warnSeo ? "warn" : "ok";
-
     lines.push(`• ${warnSeo ? t.sSeo_warn : t.sSeo_ok}`);
-
-    // code block แบบเดิม
     lines.push("```");
+
+    // Basic
     lines.push(t.basic);
     lines.push(`- title: ${meta.priority1?.title ?? t.noData}`);
     lines.push(`- description: ${meta.priority1?.description ?? t.noData}`);
@@ -369,34 +362,36 @@ function buildReport({ r404, rDup, rSeo, url, lang }) {
       lines.push("- " + t.titleLen(h.titleLength, !!h.titleLengthOk));
     }
     if (typeof h.descriptionLength === "number") {
-      lines.push(
-        "- " + t.descLen(h.descriptionLength, !!h.descriptionLengthOk)
-      );
+      lines.push("- " + t.descLen(h.descriptionLength, !!h.descriptionLengthOk));
     }
 
     lines.push("");
+    // Indexing
     lines.push(t.indexing);
     lines.push(`- canonical: ${meta.canonical?.status ?? "missing"}`);
     lines.push(
-      `- html lang: ${langInfo.htmlLang ? `✅ ${langInfo.htmlLang}` : "⛔ Not found"
+      `- html lang: ${
+        langInfo.htmlLang ? `✅ ${langInfo.htmlLang}` : "⛔ Not found"
       }`
     );
     lines.push(`- robots.txt: ${meta.other?.["robots.txt"] ?? t.noData}`);
     lines.push(`- sitemap.xml: ${meta.other?.["sitemap.xml"] ?? t.noData}`);
 
     lines.push("");
+    // Structure
     lines.push(t.structure);
     lines.push("- " + t.h1Line(headings.h1Count ?? 0));
     lines.push(
       "- " +
-      t.headingsLine(
-        headings.h1Count ?? 0,
-        headings.h2Count ?? 0,
-        headings.h3Count ?? 0
-      )
+        t.headingsLine(
+          headings.h1Count ?? 0,
+          headings.h2Count ?? 0,
+          headings.h3Count ?? 0
+        )
     );
 
     lines.push("");
+    // Social / Schema / Links
     lines.push(t.social);
     lines.push("- " + t.ogLine(!!h.hasOpenGraph));
     lines.push("- " + t.twLine(!!h.hasTwitterCard));
@@ -405,34 +400,133 @@ function buildReport({ r404, rDup, rSeo, url, lang }) {
 
     lines.push("```");
   } else if (rSeo && rSeo.error) {
-    statusSeoKind = "error";
     lines.push(`• SEO – ⚠️ ${rSeo.errorMessage || t.noData}`);
   } else {
     lines.push(`• SEO – ${t.noData}`);
   }
 
-  // ---------- ตารางสรุปผลลัพธ์ ----------
-  lines.push("");
-  lines.push("```");
-  lines.push(
-    lang === "th"
-      ? "ภาพรวมการตรวจสอบ"
-      : "Overall check summary"
-  );
-  lines.push("-----------------------");
-  lines.push("");
-  lines.push("Check      | Status");
-  lines.push("-----------|----------------------");
-  lines.push(
-    `404        | ${tableStatusText[status404Kind] || tableStatusText.nodata}`
-  );
-  lines.push(
-    `Duplicate  | ${tableStatusText[statusDupKind] || tableStatusText.nodata}`
-  );
-  lines.push(
-    `SEO        | ${tableStatusText[statusSeoKind] || tableStatusText.nodata}`
-  );
-  lines.push("```");
-
   return lines.join("\n");
 }
+
+// --------------------
+// Discord bot setup
+// --------------------
+function setupDiscordBot() {
+  if (!DISCORD_BOT_TOKEN) {
+    console.log("DISCORD_BOT_TOKEN is not set, bot will not start.");
+    return;
+  }
+  if (!DROPURL_API_BASE) {
+    console.log(
+      "DROPURL_API_BASE is not set, bot will call default DropURL domain."
+    );
+  }
+
+  const client = new Client({
+    intents: [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.MessageContent,
+    ],
+    partials: [Partials.Channel],
+  });
+
+  client.once("ready", () => {
+    console.log(`🤖 Discord bot logged in as ${client.user.tag}`);
+  });
+
+  client.on("messageCreate", async (message) => {
+    try {
+      if (message.author.bot) return;
+
+      const content = message.content.trim();
+
+      // ----- language command -----
+      if (content.toLowerCase().startsWith("!lang")) {
+        const [, arg] = content.split(/\s+/, 2);
+        const lang = (arg || "").toLowerCase();
+
+        if (lang === "th" || lang === "en") {
+          userLang.set(message.author.id, lang);
+          await message.reply(TEXT[lang].langSet);
+        } else {
+          await message.reply(
+            `${TEXT.th.langUsage}\n${TEXT.en.langUsage}`
+          );
+        }
+        return;
+      }
+
+      const lang = userLang.get(message.author.id) || "th";
+      const t = TEXT[lang];
+
+      // ----- !check -----
+      if (!content.toLowerCase().startsWith("!check ")) return;
+
+      const urlRaw = content.slice("!check ".length).trim();
+      if (!urlRaw) {
+        await message.reply(t.needUrl);
+        return;
+      }
+
+      // validate URL
+      let url = urlRaw;
+      try {
+        if (!/^https?:\/\//i.test(url)) {
+          url = `https://${url}`;
+        }
+        new URL(url);
+      } catch {
+        await message.reply(t.invalidUrl);
+        return;
+      }
+
+      const waitingMsg = await message.reply(t.checking(url));
+
+      const apiBase = DROPURL_API_BASE || "https://dropurl.vercel.app";
+      const resp = await fetch(`${apiBase}/api/check-url`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          urls: [url],
+          checks: { all: true },
+        }),
+      });
+
+      let data;
+      try {
+        data = await resp.json();
+      } catch {
+        await waitingMsg.edit(t.checkFailed("invalid JSON from API"));
+        return;
+      }
+
+      if (!resp.ok || data.error) {
+        await waitingMsg.edit(
+          t.checkFailed(data?.errorMessage || `HTTP ${resp.status}`)
+        );
+        return;
+      }
+
+      const result = data.result || {};
+      const r404 = result.check404?.results?.[0];
+      const rSeo = result.seo?.results?.[0];
+      const rDup = result.duplicate;
+      const dupSummary = result.duplicateSummary;
+
+      const report = buildReport({ r404, rDup, dupSummary, rSeo, url, lang });
+      await waitingMsg.edit(report);
+    } catch (err) {
+      console.error("bot messageCreate error:", err);
+      try {
+        await message.reply(TEXT.th.botError);
+      } catch {}
+    }
+  });
+
+  client
+    .login(DISCORD_BOT_TOKEN)
+    .catch((err) => console.error("Discord login failed:", err));
+}
+
+setupDiscordBot();
