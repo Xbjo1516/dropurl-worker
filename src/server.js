@@ -1,3 +1,4 @@
+// src/server.js
 import express from "express";
 import cors from "cors";
 import { check404 } from "../test/404.js";
@@ -8,6 +9,12 @@ const app = express();
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
+// route test เฉย ๆ ถ้าอยากลองเปิดใน browser
+app.get("/", (_req, res) => {
+  res.send("DropURL worker is running");
+});
+
+// *** เส้นที่สำคัญมาก: ต้องเป็น /run-checks ***
 app.post("/run-checks", async (req, res) => {
   const { urls, checks } = req.body || {};
 
@@ -38,8 +45,8 @@ app.post("/run-checks", async (req, res) => {
           label === "duplicate"
             ? "Duplicate scanning failed on worker."
             : label === "seo"
-            ? "SEO analysis failed on worker."
-            : "Internal worker error.",
+              ? "SEO analysis failed on worker."
+              : "Internal worker error.",
       };
     }
   };
@@ -59,7 +66,8 @@ app.post("/run-checks", async (req, res) => {
   return res.json({ error: false, result });
 });
 
-const PORT = process.env.PORT || 4000;
+// ให้ใช้ PORT จาก Railway
+const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log("DropURL worker listening on port", PORT);
 });
