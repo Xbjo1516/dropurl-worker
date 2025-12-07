@@ -38,24 +38,7 @@ function cleanHtml(html) {
   return html;
 }
 
-async function autoScroll(page) {
-  await page.evaluate(async () => {
-    await new Promise((resolve) => {
-      let total = 0;
-      const distance = 400;
-      const timer = setInterval(() => {
-        window.scrollBy(0, distance);
-        total += distance;
-        if (total >= document.body.scrollHeight) {
-          clearInterval(timer);
-          resolve();
-        }
-      }, 200);
-    });
-  });
-}
-
-export async function checkDuplicate(urls) {
+export async function checkDuplicate(urls = []) {
   const browser = await chromium.launch({ headless: true });
   const results = [];
 
@@ -82,7 +65,10 @@ export async function checkDuplicate(urls) {
         const respUrl = response.url();
         const status = response.status();
 
-        if (!seenUrlsSample.includes(respUrl) && seenUrlsSample.length < 20) {
+        if (
+          !seenUrlsSample.includes(respUrl) &&
+          seenUrlsSample.length < 20
+        ) {
           seenUrlsSample.push(respUrl);
         }
 
@@ -135,7 +121,7 @@ export async function checkDuplicate(urls) {
           hashMap[h].add(respUrl);
         }
       } catch {
-        // ignore each response error
+        // ignore
       }
     });
 
@@ -277,16 +263,32 @@ export async function checkDuplicate(urls) {
     } finally {
       try {
         await page.close();
-      } catch {}
+      } catch { }
       try {
         await context.close();
-      } catch {}
+      } catch { }
     }
   }
 
   try {
     await browser.close();
-  } catch {}
-
+  } catch { }
   return { results };
+}
+
+async function autoScroll(page) {
+  await page.evaluate(async () => {
+    await new Promise((resolve) => {
+      let total = 0;
+      const distance = 400;
+      const timer = setInterval(() => {
+        window.scrollBy(0, distance);
+        total += distance;
+        if (total >= document.body.scrollHeight) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, 200);
+    });
+  });
 }
