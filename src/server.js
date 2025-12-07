@@ -194,11 +194,25 @@ function buildReport({ r404, rDup, rSeo, url, lang }) {
   lines.push(t.header(url));
   lines.push(""); // blank line
 
+  // ==== สถานะสำหรับตารางสรุป ====
+  let status404Kind = "nodata"; // ok | warn | error | nodata
+  let statusDupKind = "nodata";
+  let statusSeoKind = "nodata";
+
+  const tableStatusText = {
+    ok: lang === "th" ? "✅ ปกติ" : "✅ OK",
+    warn: lang === "th" ? "⚠️ พบปัญหา" : "⚠️ Issue",
+    error: lang === "th" ? "⛔ ผิดพลาด" : "⛔ Error",
+    nodata: lang === "th" ? "— ไม่มีข้อมูล —" : "— no data —",
+  };
+
   // ---------- 404 ----------
   if (r404) {
     const status = r404.pageStatus ?? "no response";
-    const hasIframe404 = Array.isArray(r404.iframe404s) && r404.iframe404s.length > 0;
-    const hasAsset404 = Array.isArray(r404.assetFailures) && r404.assetFailures.length > 0;
+    const hasIframe404 =
+      Array.isArray(r404.iframe404s) && r404.iframe404s.length > 0;
+    const hasAsset404 =
+      Array.isArray(r404.assetFailures) && r404.assetFailures.length > 0;
 
     const ok404 =
       typeof status === "number" &&
@@ -207,16 +221,40 @@ function buildReport({ r404, rDup, rSeo, url, lang }) {
       !hasIframe404 &&
       !hasAsset404;
 
+    status404Kind = ok404 ? "ok" : "warn";
+
+    // bullet เดิม (สรุป)
     lines.push(`• ${ok404 ? t.s404_ok : t.s404_warn}`);
-    lines.push(
-      `  - ${t.mainStatus}: ${status}`
-    );
+    lines.push(`  - ${t.mainStatus}: ${status}`);
     if (hasIframe404) {
       lines.push(`  - ${t.iframe404(r404.iframe404s.length)}`);
     }
     if (hasAsset404) {
       lines.push(`  - ${t.asset404(r404.assetFailures.length)}`);
     }
+
+    // กรอบแบบ SEO
+    lines.push("```");
+    lines.push("404");
+    lines.push("------");
+    lines.push(`- ${t.mainStatus}: ${status}`);
+    if (hasIframe404) {
+      lines.push(`- ${t.iframe404(r404.iframe404s.length)}`);
+    } else {
+      lines.push(
+        lang === "th" ? "- iframe 404: ไม่มี" : "- iframe 404: none"
+      );
+    }
+    if (hasAsset404) {
+      lines.push(`- ${t.asset404(r404.assetFailures.length)}`);
+    } else {
+      lines.push(
+        lang === "th"
+          ? "- iframe asset 404: ไม่มี"
+          : "- iframe asset 404: none"
+      );
+    }
+    lines.push("```");
   } else {
     lines.push(`• 404 – ${t.noData}`);
   }
@@ -224,17 +262,72 @@ function buildReport({ r404, rDup, rSeo, url, lang }) {
   lines.push(""); // blank line
 
   // ---------- Duplicate ----------
+  let hasDup = false;
+
   if (rDup) {
     if (rDup.error) {
+      statusDupKind = "error";
       lines.push(`• ${t.sDup_error}`);
     } else if (Array.isArray(rDup.results) && rDup.results.length > 0) {
-      const hasDup = rDup.results.some(
+      hasDup = rDup.results.some(
         (it) => Array.isArray(it.duplicates) && it.duplicates.length > 1
       );
+      statusDupKind = hasDup ? "warn" : "ok";
       lines.push(`• ${hasDup ? t.sDup_warn : t.sDup_ok}`);
     } else {
+      statusDupKind = "ok";
       lines.push(`• ${t.sDup_ok}`);
     }
+
+    // กรอบแบบ SEO
+    lines.push("```");
+    lines.push("Duplicate");
+    lines.push("---------");
+
+    if (rDup.error) {
+      lines.push(
+        `- ${lang === "th" ? "สถานะ" : "status"
+        }: ERROR (${rDup.errorMessage || t.noData})`
+      );
+    } else if (Array.isArray(rDup.results) && rDup.results.length > 0) {
+      const first = rDup.results[0];
+      const dupCount = Array.isArray(first.duplicates)
+        ? first.duplicates.length
+        : 0;
+
+      lines.push(
+        `- URL: ${first.url || url || (lang === "th" ? "ไม่ระบุ" : "n/a")}`
+      );
+      lines.push(
+        `- ${lang === "th" ? "จำนวนไฟล์/หน้าเนื้อหาซ้ำ" : "duplicate items"
+        }: ${dupCount}`
+      );
+
+      if (dupCount > 0) {
+        lines.push("");
+        lines.push(
+          lang === "th" ? "รายการที่ซ้ำ:" : "Duplicated resources:"
+        );
+        first.duplicates.slice(0, 10).forEach((u, idx) => {
+          lines.push(`  ${idx + 1}. ${u}`);
+        });
+        if (dupCount > 10) {
+          lines.push(
+            lang === "th"
+              ? `  ... และอีก ${dupCount - 10} รายการ`
+              : `  ... and ${dupCount - 10} more`
+          );
+        }
+      }
+    } else {
+      lines.push(
+        lang === "th"
+          ? "- ไม่พบรายการซ้ำในข้อมูลที่ส่งมา"
+          : "- no duplicates in the given data"
+      );
+    }
+
+    lines.push("```");
   } else {
     lines.push(`• Duplicate – ${t.noData}`);
   }
@@ -242,6 +335,8 @@ function buildReport({ r404, rDup, rSeo, url, lang }) {
   lines.push(""); // blank line
 
   // ---------- SEO ----------
+  let warnSeo = false;
+
   if (rSeo && rSeo.meta) {
     const meta = rSeo.meta;
     const h = meta.seoHints || {};
@@ -250,7 +345,7 @@ function buildReport({ r404, rDup, rSeo, url, lang }) {
     const links = meta.links || {};
     const langInfo = meta.lang || {};
 
-    const warnSeo =
+    warnSeo =
       !h.titleLengthOk ||
       !h.descriptionLengthOk ||
       !h.hasCanonical ||
@@ -261,46 +356,40 @@ function buildReport({ r404, rDup, rSeo, url, lang }) {
       !h.hasTwitterCard ||
       !h.hasSchema;
 
+    statusSeoKind = warnSeo ? "warn" : "ok";
+
     lines.push(`• ${warnSeo ? t.sSeo_warn : t.sSeo_ok}`);
 
-    // code block แบบในรูป
+    // code block แบบเดิม
     lines.push("```");
     lines.push(t.basic);
-    lines.push(
-      `- title: ${meta.priority1?.title ?? t.noData}`
-    );
-    lines.push(
-      `- description: ${meta.priority1?.description ?? t.noData}`
-    );
+    lines.push(`- title: ${meta.priority1?.title ?? t.noData}`);
+    lines.push(`- description: ${meta.priority1?.description ?? t.noData}`);
     if (typeof h.titleLength === "number") {
       lines.push("- " + t.titleLen(h.titleLength, !!h.titleLengthOk));
     }
     if (typeof h.descriptionLength === "number") {
-      lines.push("- " + t.descLen(h.descriptionLength, !!h.descriptionLengthOk));
+      lines.push(
+        "- " + t.descLen(h.descriptionLength, !!h.descriptionLengthOk)
+      );
     }
 
     lines.push("");
     lines.push(t.indexing);
+    lines.push(`- canonical: ${meta.canonical?.status ?? "missing"}`);
     lines.push(
-      `- canonical: ${meta.canonical?.status ?? "missing"}`
+      `- html lang: ${langInfo.htmlLang ? `✅ ${langInfo.htmlLang}` : "⛔ Not found"
+      }`
     );
-    lines.push(
-      `- html lang: ${langInfo.htmlLang ? `✅ ${langInfo.htmlLang}` : "⛔ Not found"}`
-    );
-    lines.push(
-      `- robots.txt: ${meta.other?.["robots.txt"] ?? t.noData}`
-    );
-    lines.push(
-      `- sitemap.xml: ${meta.other?.["sitemap.xml"] ?? t.noData}`
-    );
+    lines.push(`- robots.txt: ${meta.other?.["robots.txt"] ?? t.noData}`);
+    lines.push(`- sitemap.xml: ${meta.other?.["sitemap.xml"] ?? t.noData}`);
 
     lines.push("");
     lines.push(t.structure);
+    lines.push("- " + t.h1Line(headings.h1Count ?? 0));
     lines.push(
-      "- " + t.h1Line(headings.h1Count ?? 0)
-    );
-    lines.push(
-      "- " + t.headingsLine(
+      "- " +
+      t.headingsLine(
         headings.h1Count ?? 0,
         headings.h2Count ?? 0,
         headings.h3Count ?? 0
@@ -316,128 +405,34 @@ function buildReport({ r404, rDup, rSeo, url, lang }) {
 
     lines.push("```");
   } else if (rSeo && rSeo.error) {
+    statusSeoKind = "error";
     lines.push(`• SEO – ⚠️ ${rSeo.errorMessage || t.noData}`);
   } else {
     lines.push(`• SEO – ${t.noData}`);
   }
 
+  // ---------- ตารางสรุปผลลัพธ์ ----------
+  lines.push("");
+  lines.push("```");
+  lines.push(
+    lang === "th"
+      ? "ภาพรวมการตรวจสอบ"
+      : "Overall check summary"
+  );
+  lines.push("-----------------------");
+  lines.push("");
+  lines.push("Check      | Status");
+  lines.push("-----------|----------------------");
+  lines.push(
+    `404        | ${tableStatusText[status404Kind] || tableStatusText.nodata}`
+  );
+  lines.push(
+    `Duplicate  | ${tableStatusText[statusDupKind] || tableStatusText.nodata}`
+  );
+  lines.push(
+    `SEO        | ${tableStatusText[statusSeoKind] || tableStatusText.nodata}`
+  );
+  lines.push("```");
+
   return lines.join("\n");
 }
-
-function setupDiscordBot() {
-  if (!DISCORD_BOT_TOKEN) {
-    console.log("DISCORD_BOT_TOKEN is not set, bot will not start.");
-    return;
-  }
-  if (!DROPURL_API_BASE) {
-    console.log("DROPURL_API_BASE is not set, bot will not call DropURL API.");
-  }
-
-  const client = new Client({
-    intents: [
-      GatewayIntentBits.Guilds,
-      GatewayIntentBits.GuildMessages,
-      GatewayIntentBits.MessageContent,
-    ],
-    partials: [Partials.Channel],
-  });
-
-  client.once("ready", () => {
-    console.log(`🤖 Discord bot logged in as ${client.user.tag}`);
-  });
-
-  client.on("messageCreate", async (message) => {
-    try {
-      if (message.author.bot) return;
-
-      const content = message.content.trim();
-
-      // ----- เปลี่ยนภาษา -----
-      if (content.toLowerCase().startsWith("!lang")) {
-        const [, arg] = content.split(/\s+/, 2);
-        const lang = (arg || "").toLowerCase();
-        if (lang === "th" || lang === "en") {
-          userLang.set(message.author.id, lang);
-          await message.reply(TEXT[lang].langSet);
-        } else {
-          await message.reply(
-            `${TEXT.th.langUsage}\n${TEXT.en.langUsage}`
-          );
-        }
-        return;
-      }
-
-      const lang = userLang.get(message.author.id) || "th";
-      const t = TEXT[lang];
-
-      // ----- !check -----
-      if (!content.toLowerCase().startsWith("!check ")) return;
-
-      const urlRaw = content.slice("!check ".length).trim();
-      if (!urlRaw) {
-        await message.reply(t.needUrl);
-        return;
-      }
-
-      // ดัก URL format พิมพ์ผิด
-      let url = urlRaw;
-      try {
-        if (!/^https?:\/\//i.test(url)) {
-          url = `https://${url}`;
-        }
-        new URL(url);
-      } catch {
-        await message.reply(t.invalidUrl);
-        return;
-      }
-
-      const waitingMsg = await message.reply(t.checking(url));
-
-      const apiBase = DROPURL_API_BASE || "https://dropurl.vercel.app";
-      const resp = await fetch(`${apiBase}/api/check-url`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          urls: [url],
-          checks: { all: true },
-        }),
-      });
-
-      let data;
-      try {
-        data = await resp.json();
-      } catch {
-        await waitingMsg.edit(t.checkFailed("invalid JSON from API"));
-        return;
-      }
-
-      if (!resp.ok || data.error) {
-        await waitingMsg.edit(
-          t.checkFailed(
-            data?.errorMessage || `HTTP ${resp.status}`
-          )
-        );
-        return;
-      }
-
-      const result = data.result || {};
-      const r404 = result.check404?.results?.[0];
-      const rSeo = result.seo?.results?.[0];
-      const rDup = result.duplicate;
-
-      const report = buildReport({ r404, rDup, rSeo, url, lang });
-      await waitingMsg.edit(report);
-    } catch (err) {
-      console.error("bot messageCreate error:", err);
-      try {
-        await message.reply(TEXT.th.botError);
-      } catch {}
-    }
-  });
-
-  client
-    .login(DISCORD_BOT_TOKEN)
-    .catch((err) => console.error("Discord login failed:", err));
-}
-
-setupDiscordBot();
