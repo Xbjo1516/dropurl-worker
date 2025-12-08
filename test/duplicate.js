@@ -1,6 +1,6 @@
 // /test/duplicate.js
-import crypto from "crypto";
-import { chromium } from "playwright";
+const crypto = require("crypto");
+const { chromium } = require("playwright");
 
 function hashBuffer(buf) {
   return crypto.createHash("sha256").update(buf).digest("hex");
@@ -38,7 +38,7 @@ function cleanHtml(html) {
   return html;
 }
 
-export async function checkDuplicate(urls = []) {
+async function checkDuplicate(urls) {
   const browser = await chromium.launch({ headless: true });
   const results = [];
 
@@ -54,7 +54,7 @@ export async function checkDuplicate(urls = []) {
     const context = await browser.newContext();
     const page = await context.newPage();
 
-    const hashMap = {};
+    const hashMap = {}; 
     const responsesSeen = new Set();
     let responseCount = 0;
     const seenUrlsSample = [];
@@ -121,7 +121,6 @@ export async function checkDuplicate(urls = []) {
           hashMap[h].add(respUrl);
         }
       } catch {
-        // ignore
       }
     });
 
@@ -196,9 +195,7 @@ export async function checkDuplicate(urls = []) {
                 if (!hashMap[hh]) hashMap[hh] = new Set();
                 hashMap[hh].add(s);
               }
-            } catch {
-              // ignore
-            }
+            } catch {}
           });
 
           await p2
@@ -263,16 +260,16 @@ export async function checkDuplicate(urls = []) {
     } finally {
       try {
         await page.close();
-      } catch { }
+      } catch {}
       try {
         await context.close();
-      } catch { }
+      } catch {}
     }
   }
 
   try {
     await browser.close();
-  } catch { }
+  } catch {}
   return { results };
 }
 
@@ -292,3 +289,5 @@ async function autoScroll(page) {
     });
   });
 }
+
+module.exports = { checkDuplicate };
