@@ -5,6 +5,7 @@ import { check404 } from "../test/404.js";
 import { checkDuplicate } from "../test/duplicate.js";
 import { checkSeo } from "../test/read-elements.js";
 import { Client, GatewayIntentBits, Partials } from "discord.js";
+import { crawlAndCheck } from "../test/crawler.js";
 
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const DROPURL_API_BASE = process.env.DROPURL_API_BASE;
@@ -120,6 +121,44 @@ app.post("/run-checks", async (req, res) => {
   return res.json({ error: false, result });
 });
 
+app.post("/crawl-check", async (req, res) => {
+  const { url, maxDepth = 1, sameDomainOnly = true, checks } = req.body || {};
+
+  if (!url) {
+    return res.status(400).json({
+      error: true,
+      message: "url is required",
+    });
+  }
+
+  // ✅ normalize checks เหมือน /run-checks
+  const normChecks = {
+    check404: !!(checks?.all || checks?.check404),
+    duplicate: !!(checks?.all || checks?.duplicate),
+    seo: !!(checks?.all || checks?.seo),
+  };
+
+  try {
+    const data = await crawlAndCheck({
+      startUrl: url,
+      maxDepth: Number(maxDepth),
+      sameDomainOnly: !!sameDomainOnly,
+      checks: normChecks, // ✅ ใช้ตัวนี้
+    });
+
+    return res.json({
+      error: false,
+      result: data,
+    });
+  } catch (e) {
+    console.error("crawl-check failed:", e);
+    return res.status(500).json({
+      error: true,
+      message: e.message || "crawl failed",
+    });
+  }
+});
+
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
   console.log("DropURL worker listening on port", PORT);
@@ -185,8 +224,7 @@ const TEXT = {
         ? `Schema.org: ✅ ${types.join(", ")}`
         : "Schema.org: ⛔ ไม่พบ",
     linksLine: (l) =>
-      `links: total=${l.total || 0}, internal=${l.internal || 0}, external=${
-        l.external || 0
+      `links: total=${l.total || 0}, internal=${l.internal || 0}, external=${l.external || 0
       }`,
     unreachable: "URL not reachable",
   },
@@ -236,8 +274,7 @@ const TEXT = {
         ? `Schema.org: ✅ ${types.join(", ")}`
         : "Schema.org: ⛔ not found",
     linksLine: (l) =>
-      `links: total=${l.total || 0}, internal=${l.internal || 0}, external=${
-        l.external || 0
+      `links: total=${l.total || 0}, internal=${l.internal || 0}, external=${l.external || 0
       }`,
     unreachable: "URL not reachable",
   },
@@ -310,8 +347,7 @@ function buildReport({ r404, rDup, dupSummary, rSeo, url, lang }) {
         groups.slice(0, 3).forEach((g, idx) => {
           const urls = Array.isArray(g.urls) ? g.urls : [];
           lines.push(
-            `- #${idx + 1}: ${urls.length} URL(s) (hash: ${
-              g.hash ? g.hash.slice(0, 8) : "n/a"
+            `- #${idx + 1}: ${urls.length} URL(s) (hash: ${g.hash ? g.hash.slice(0, 8) : "n/a"
             })`
           );
           urls.slice(0, 4).forEach((u) => {
@@ -370,8 +406,7 @@ function buildReport({ r404, rDup, dupSummary, rSeo, url, lang }) {
     lines.push(t.indexing);
     lines.push(`- canonical: ${meta.canonical?.status ?? "missing"}`);
     lines.push(
-      `- html lang: ${
-        langInfo.htmlLang ? `✅ ${langInfo.htmlLang}` : "⛔ Not found"
+      `- html lang: ${langInfo.htmlLang ? `✅ ${langInfo.htmlLang}` : "⛔ Not found"
       }`
     );
     lines.push(`- robots.txt: ${meta.other?.["robots.txt"] ?? t.noData}`);
@@ -383,11 +418,11 @@ function buildReport({ r404, rDup, dupSummary, rSeo, url, lang }) {
     lines.push("- " + t.h1Line(headings.h1Count ?? 0));
     lines.push(
       "- " +
-        t.headingsLine(
-          headings.h1Count ?? 0,
-          headings.h2Count ?? 0,
-          headings.h3Count ?? 0
-        )
+      t.headingsLine(
+        headings.h1Count ?? 0,
+        headings.h2Count ?? 0,
+        headings.h3Count ?? 0
+      )
     );
 
     lines.push("");
@@ -520,7 +555,7 @@ function setupDiscordBot() {
       console.error("bot messageCreate error:", err);
       try {
         await message.reply(TEXT.th.botError);
-      } catch {}
+      } catch { }
     }
   });
 
