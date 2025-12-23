@@ -1,5 +1,8 @@
 import { firefox } from "playwright";
 
+const USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36";
+
 function getRootUrl(inputUrl) {
   try {
     const u = new URL(inputUrl);
@@ -19,23 +22,38 @@ async function urlExists(inputUrl) {
 }
 
 async function getMeta(page, selector, attr = "content") {
-  const el = page.locator(selector).first();
-  if ((await el.count()) === 0) return null;
-  if (attr === "text") return (await el.textContent()) || null;
-  return (await el.getAttribute(attr)) || null;
+  try {
+    if (page.isClosed()) return null;
+
+    const el = page.locator(selector).first();
+    if ((await el.count()) === 0) return null;
+
+    if (attr === "text") {
+      return (await el.textContent()) || null;
+    }
+
+    return (await el.getAttribute(attr)) || null;
+  } catch (err) {
+    console.warn(`[SEO] getMeta failed: ${selector}`, err.message);
+    return null;
+  }
 }
 
 async function getTwitterMeta(page, key) {
-  const el1 = page.locator(`meta[name='${key}']`).first();
-  if (await el1.count()) return (await el1.getAttribute("content")) || null;
+  try {
+    if (page.isClosed()) return null;
 
-  const el2 = page.locator(`meta[property='${key}']`).first();
-  if (await el2.count()) return (await el2.getAttribute("content")) || null;
+    const el1 = page.locator(`meta[name='${key}']`).first();
+    if (await el1.count()) return (await el1.getAttribute("content")) || null;
 
-  const el3 = page.locator(`meta[property='${key}'][name]`).first();
-  if (await el3.count()) return (await el3.getAttribute("content")) || null;
+    const el2 = page.locator(`meta[property='${key}']`).first();
+    if (await el2.count()) return (await el2.getAttribute("content")) || null;
 
-  return null;
+    return null;
+  } catch (err) {
+    console.warn(`[SEO] twitter meta failed: ${key}`, err.message);
+    return null;
+  }
 }
 
 /**
@@ -46,7 +64,17 @@ async function getTwitterMeta(page, key) {
  */
 async function analyzeMeta(page, url) {
   console.log(`\n🚀 SEO check: ${url}`);
-  await page.goto(url, { waitUntil: "load" }).catch(() => {});
+  await page.goto(url, {
+    waitUntil: "domcontentloaded",
+    timeout: 20000,
+  }).catch(() => { });
+
+  if (page.isClosed()) {
+    return {
+      skipped: true,
+      reason: "page_closed_or_blocked",
+    };
+  }
 
   const metaData = {};
 
@@ -137,19 +165,30 @@ async function analyzeMeta(page, url) {
     hasHtmlLang: !!htmlLang,
   };
 
-  // 3) Headings (H1 / H2 / H3)
-  const headingInfo = await page.evaluate(() => {
-    const h1s = Array.from(document.querySelectorAll("h1"));
-    const h2s = Array.from(document.querySelectorAll("h2"));
-    const h3s = Array.from(document.querySelectorAll("h3"));
 
-    return {
-      h1Count: h1s.length,
-      h1Texts: h1s.map((el) => (el.textContent || "").trim()),
-      h2Count: h2s.length,
-      h3Count: h3s.length,
-    };
-  });
+  // 3) Headings (H1 / H2 / H3)
+  let headingInfo = {
+    h1Count: 0,
+    h1Texts: [],
+    h2Count: 0,
+    h3Count: 0,
+  };
+
+  try {
+    headingInfo = await page.evaluate(() => {
+      const h1s = Array.from(document.querySelectorAll("h1"));
+      const h2s = Array.from(document.querySelectorAll("h2"));
+      const h3s = Array.from(document.querySelectorAll("h3"));
+      return {
+        h1Count: h1s.length,
+        h1Texts: h1s.map(el => (el.textContent || "").trim()),
+        h2Count: h2s.length,
+        h3Count: h3s.length,
+      };
+    });
+  } catch {
+    // page closed → ใช้ค่า default
+  }
 
   metaData.headings = {
     h1Count: headingInfo.h1Count,
@@ -161,87 +200,66 @@ async function analyzeMeta(page, url) {
   };
 
   // 4) Images alt
-  const imageInfo = await page.evaluate(() => {
-    const imgs = Array.from(document.querySelectorAll("img"));
-    let withAlt = 0;
-    let withoutAlt = 0;
-    imgs.forEach((img) => {
-      const alt = img.getAttribute("alt");
-      if (alt && alt.trim().length > 0) withAlt++;
-      else withoutAlt++;
+  let imageInfo = { total: 0, withAlt: 0, withoutAlt: 0 };
+  try {
+    imageInfo = await page.evaluate(() => {
+      const imgs = Array.from(document.querySelectorAll("img"));
+      let withAlt = 0;
+      let withoutAlt = 0;
+      imgs.forEach(img => {
+        const alt = img.getAttribute("alt");
+        if (alt && alt.trim()) withAlt++;
+        else withoutAlt++;
+      });
+      return { total: imgs.length, withAlt, withoutAlt };
     });
-    return {
-      total: imgs.length,
-      withAlt,
-      withoutAlt,
-    };
-  });
-
+  } catch { }
   metaData.images = imageInfo;
 
   // 5) Internal / External links
-  const linkInfo = await page.evaluate((pageUrl) => {
-    const aTags = Array.from(document.querySelectorAll("a[href]"));
+  let linkInfo = { total: 0, internal: 0, external: 0, follow: 0, nofollow: 0 };
+  try {
+    linkInfo = await page.evaluate((pageUrl) => {
+      const aTags = Array.from(document.querySelectorAll("a[href]"));
+      let internal = 0, external = 0, follow = 0, nofollow = 0;
+      const origin = new URL(pageUrl).origin;
 
-    let internal = 0;
-    let external = 0;
-    let follow = 0;
-    let nofollow = 0;
-    const origin = new URL(pageUrl).origin;
+      aTags.forEach((a) => {
+        const href = a.href;
+        if (!href) return;
+        if (href.startsWith(origin)) internal++;
+        else if (/^https?:\/\//i.test(href)) external++;
 
-    aTags.forEach((a) => {
-      const href = a.href;
-      if (!href) return;
-      if (href.startsWith(origin)) internal++;
-      else if (/^https?:\/\//i.test(href)) external++;
+        const rel = (a.getAttribute("rel") || "").toLowerCase();
+        if (rel.includes("nofollow")) nofollow++;
+        else follow++;
+      });
 
-      const rel = (a.getAttribute("rel") || "").toLowerCase();
-      if (rel.includes("nofollow")) nofollow++;
-      else follow++;
-    });
-
-    return { total: aTags.length, internal, external, follow, nofollow };
-  }, url);
-
+      return { total: aTags.length, internal, external, follow, nofollow };
+    }, url);
+  } catch { }
   metaData.links = linkInfo;
 
   // 6) Structured Data (schema.org via JSON-LD)
-  const schemaInfo = await page.evaluate(() => {
-    const scripts = Array.from(
-      document.querySelectorAll('script[type="application/ld+json"]')
-    );
-    const types = [];
-    scripts.forEach((s) => {
-      try {
-        const text = s.textContent || "{}";
-        const json = JSON.parse(text);
-        if (Array.isArray(json)) {
-          json.forEach((item) => {
-            if (item && item["@type"]) types.push(item["@type"]);
-            if (item && item["@graph"]) {
-              item["@graph"].forEach((g) => {
-                if (g && g["@type"]) types.push(g["@type"]);
-              });
-            }
-          });
-        } else {
+  let schemaInfo = { hasSchema: false, types: [] };
+  try {
+    schemaInfo = await page.evaluate(() => {
+      const scripts = Array.from(
+        document.querySelectorAll('script[type="application/ld+json"]')
+      );
+      const types = [];
+      scripts.forEach((s) => {
+        try {
+          const json = JSON.parse(s.textContent || "{}");
           if (json["@type"]) types.push(json["@type"]);
           if (json["@graph"]) {
-            json["@graph"].forEach((g) => {
-              if (g && g["@type"]) types.push(g["@type"]);
-            });
+            json["@graph"].forEach(g => g["@type"] && types.push(g["@type"]));
           }
-        }
-      } catch {
-        // ignore invalid JSON
-      }
+        } catch { }
+      });
+      return { hasSchema: scripts.length > 0, types };
     });
-    return {
-      hasSchema: scripts.length > 0,
-      types,
-    };
-  });
-
+  } catch { }
   metaData.schema = schemaInfo;
 
   // 7) Hint สำหรับ SEO score (ไม่ใช่คะแนนจริง แต่เป็น checklist)
@@ -281,8 +299,6 @@ export async function checkSeo(bannerUrls = []) {
   }
 
   const browser = await firefox.launch({ headless: true });
-  const page = await browser.newPage();
-
   const results = [];
 
   for (const originalUrl of bannerUrls) {
@@ -301,7 +317,22 @@ export async function checkSeo(bannerUrls = []) {
       continue;
     }
 
-    const metaData = await analyzeMeta(page, rootUrl);
+    let metaData;
+
+    try {
+      const tab = await browser.newPage({ userAgent: USER_AGENT });
+      try {
+        metaData = await analyzeMeta(tab, rootUrl);
+      } finally {
+        await tab.close();
+      }
+    } catch (err) {
+      console.warn("[SEO] analyzeMeta crashed:", err.message);
+      metaData = {
+        skipped: true,
+        reason: "analyze_failed",
+      };
+    }
 
     results.push({
       originalUrl,
@@ -310,8 +341,10 @@ export async function checkSeo(bannerUrls = []) {
       meta: metaData,
     });
   }
-
-  await browser.close();
-
-  return { results };
+  try {
+    // loop + logic ทั้งหมด
+    return { results };
+  } finally {
+    await browser.close();
+  }
 }
