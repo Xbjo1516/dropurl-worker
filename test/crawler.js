@@ -46,7 +46,17 @@ export async function crawlAndCheck({
           for (const link of links) {
             if (!link) continue;
 
-            const nextUrl = normalizeUrl(link);
+            if (
+              link.startsWith("mailto:") ||
+              link.startsWith("tel:") ||
+              link.startsWith("javascript:") ||
+              link.startsWith("#")
+            ) {
+              continue;
+            }
+
+            const nextUrl = normalizeUrl(link, url);
+            if (!nextUrl) continue;
 
             if (sameDomainOnly && !isSameDomain(nextUrl, startHost)) continue;
             if (visited.has(nextUrl)) continue;
@@ -85,10 +95,15 @@ export async function crawlAndCheck({
 
 // ---------------- utils ----------------
 
-function normalizeUrl(raw) {
-  const u = new URL(raw);
-  u.hash = "";
-  return u.toString();
+function normalizeUrl(raw, base) {
+  try {
+    const u = base ? new URL(raw, base) : new URL(raw);
+    u.hash = "";
+    u.search = ""; 
+    return u.toString();
+  } catch {
+    return null;
+  }
 }
 
 function isSameDomain(url, startHost) {
