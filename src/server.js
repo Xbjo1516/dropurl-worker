@@ -4,7 +4,7 @@ import cors from "cors";
 import { check404 } from "../test/404.js";
 import { checkDuplicate } from "../test/duplicate.js";
 import { checkSeo } from "../test/read-elements.js";
-import { Client, GatewayIntentBits, Partials } from "discord.js";
+import { Client, GatewayIntentBits, Partials, Events } from "discord.js";
 import { crawlAndCheck } from "../test/crawler.js";
 
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
@@ -466,7 +466,7 @@ function setupDiscordBot() {
     partials: [Partials.Channel],
   });
 
-  client.once("ready", () => {
+  client.once(Events.ClientReady, () => {
     console.log(`🤖 Discord bot logged in as ${client.user.tag}`);
   });
 
