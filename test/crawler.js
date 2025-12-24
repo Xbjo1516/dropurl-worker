@@ -6,7 +6,7 @@ export async function crawlAndCheck({
   startUrl,
   maxDepth = 1,
   sameDomainOnly = true,
-  maxUrls = 100,
+  maxUrls = 50,
 }) {
   const visited = new Set();
   const results = [];
