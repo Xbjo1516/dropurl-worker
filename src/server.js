@@ -632,7 +632,7 @@ function setupDiscordBot() {
       let aiSummary = "";
 
       try {
-        const aiResp = await fetch(`${DROPURL_API_BASE}/api/ai-summary`, {
+        const aiResp =  await fetch(`${apiBase}/lib/ai.ts`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
