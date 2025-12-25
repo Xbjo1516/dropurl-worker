@@ -632,7 +632,8 @@ function setupDiscordBot() {
       let aiSummary = "";
 
       try {
-        const aiResp =  await fetch(`${apiBase}/lib/ai.ts`, {
+        const apiBase = DROPURL_API_BASE || "https://dropurl.vercel.app";
+        const aiResp = await fetch(`${apiBase}/lib/ai.ts`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
