@@ -667,8 +667,8 @@ function setupDiscordBot() {
         aiSummary +
         "\n```";
 
-      // // 1) แก้ข้อความแรก: report อย่างเดียว
-      // await waitingMsg.edit(report);
+      // 1) แก้ข้อความแรก: report อย่างเดียว
+      await waitingMsg.edit(report);
 
       // 2) ส่ง AI summary เป็นข้อความใหม่
       await message.channel.send(
