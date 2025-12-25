@@ -7,10 +7,6 @@ import { checkSeo } from "../test/read-elements.js";
 import { Client, GatewayIntentBits, Partials, Events } from "discord.js";
 import { crawlAndCheck } from "../test/crawler.js";
 
-import { summarizeWithAI } from "../lib/ai.js";
-
-
-
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const DROPURL_API_BASE = process.env.DROPURL_API_BASE;
 
@@ -632,11 +628,29 @@ function setupDiscordBot() {
       };
 
       const report = buildReport({ r404, rDup, dupSummary, rSeo, url, lang });
-
       let aiSummary = "";
 
       try {
-        aiSummary = await summarizeWithAI(aiMeta, lang);
+        const aiResp = await fetch(
+          `${apiBase}/api/ai-summary`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              urls: aiMeta.urls,
+              has404: aiMeta.has404,
+              hasDuplicate: aiMeta.hasDuplicate,
+              hasSeoIssues: aiMeta.hasSeoIssues,
+              issueDetails: aiMeta.issueDetails,
+              lang,
+            }),
+          }
+        );
+
+        const aiData = await aiResp.json();
+        aiSummary = aiData.summary || "";
       } catch (e) {
         console.error("AI summarize error:", e);
         aiSummary =

@@ -9,9 +9,12 @@
     "postinstall": "playwright install chromium"
   },
   "dependencies": {
-    "express": "^4.21.2",
     "cors": "^2.8.5",
-    "playwright": "^1.57.0",
-    "discord.js": "^14.16.3"
+    "discord.js": "^14.16.3",
+    "express": "^4.21.2",
+    "playwright": "^1.57.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0"
   }
 }
