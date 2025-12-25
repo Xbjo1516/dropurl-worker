@@ -6,8 +6,6 @@ import { checkDuplicate } from "../test/duplicate.js";
 import { checkSeo } from "../test/read-elements.js";
 import { Client, GatewayIntentBits, Partials, Events } from "discord.js";
 import { crawlAndCheck } from "../test/crawler.js";
-import { summarizeWithAI } from "../lib/ai.js";
-
 
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const DROPURL_API_BASE = process.env.DROPURL_API_BASE;
@@ -590,7 +588,7 @@ function setupDiscordBot() {
           !h.hasH1 ||
           !h.hasOpenGraph ||
           !h.hasTwitterCard;
-          
+
         if (hasSeoIssue) {
           const seoProblems = [];
 
@@ -632,12 +630,24 @@ function setupDiscordBot() {
       const report = buildReport({ r404, rDup, dupSummary, rSeo, url, lang });
 
       let aiSummary = "";
+
       try {
-        aiSummary = await summarizeWithAI(aiMeta, lang);
+        const aiResp = await fetch(`${DROPURL_API_BASE}/api/ai-summary`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...aiMeta,
+            lang,
+          }),
+        });
+
+        const aiData = await aiResp.json();
+        aiSummary = aiData.summary || "";
       } catch (e) {
-        aiSummary = lang === "th"
-          ? "ไม่สามารถสรุปด้วย AI ได้ในขณะนี้"
-          : "AI summary is unavailable at the moment.";
+        aiSummary =
+          lang === "th"
+            ? "ไม่สามารถสรุปด้วย AI ได้ในขณะนี้"
+            : "AI summary is unavailable at the moment.";
       }
 
       const finalMessage =
