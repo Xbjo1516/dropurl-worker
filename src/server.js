@@ -667,7 +667,13 @@ function setupDiscordBot() {
         aiSummary +
         "\n```";
 
-      await waitingMsg.edit(finalMessage);
+      // // 1) แก้ข้อความแรก: report อย่างเดียว
+      // await waitingMsg.edit(report);
+
+      // 2) ส่ง AI summary เป็นข้อความใหม่
+      await message.channel.send(
+        "🤖 **AI Summary**\n```" + aiSummary.slice(0, 1900) + "\n```"
+      );
     } catch (err) {
       console.error("bot messageCreate error:", err);
       try {
