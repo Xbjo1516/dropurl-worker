@@ -7,6 +7,10 @@ import { checkSeo } from "../test/read-elements.js";
 import { Client, GatewayIntentBits, Partials, Events } from "discord.js";
 import { crawlAndCheck } from "../test/crawler.js";
 
+import { summarizeWithAI } from "../lib/ai.js";
+
+
+
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const DROPURL_API_BASE = process.env.DROPURL_API_BASE;
 
@@ -632,19 +636,9 @@ function setupDiscordBot() {
       let aiSummary = "";
 
       try {
-        const apiBase = DROPURL_API_BASE || "https://dropurl.vercel.app";
-        const aiResp = await fetch(`${apiBase}/lib/ai.ts`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            ...aiMeta,
-            lang,
-          }),
-        });
-
-        const aiData = await aiResp.json();
-        aiSummary = aiData.summary || "";
+        aiSummary = await summarizeWithAI(aiMeta, lang);
       } catch (e) {
+        console.error("AI summarize error:", e);
         aiSummary =
           lang === "th"
             ? "ไม่สามารถสรุปด้วย AI ได้ในขณะนี้"
