@@ -6,6 +6,8 @@ import { checkDuplicate } from "../test/duplicate.js";
 import { checkSeo } from "../test/read-elements.js";
 import { Client, GatewayIntentBits, Partials, Events } from "discord.js";
 import { crawlAndCheck } from "../test/crawler.js";
+import { summarizeWithAI } from "../lib/ai.js";
+
 
 const DISCORD_BOT_TOKEN = process.env.DISCORD_BOT_TOKEN;
 const DROPURL_API_BASE = process.env.DROPURL_API_BASE;
@@ -549,8 +551,104 @@ function setupDiscordBot() {
       const rDup = result.duplicate;
       const dupSummary = result.duplicateSummary;
 
+      // --------------------
+      // Build AI summary meta
+      // --------------------
+      const issueDetails = [];
+
+      // 404
+      if (r404) {
+        const has404 =
+          (Array.isArray(r404.iframe404s) && r404.iframe404s.length > 0) ||
+          (Array.isArray(r404.assetFailures) && r404.assetFailures.length > 0) ||
+          (typeof r404.pageStatus === "number" && r404.pageStatus >= 400);
+
+        if (has404) {
+          issueDetails.push({
+            type: "404",
+            urls: [url],
+          });
+        }
+      }
+
+      // Duplicate
+      if (dupSummary?.detected && dupSummary.crossPageDuplicates?.length) {
+        issueDetails.push({
+          type: "duplicate",
+          urls: dupSummary.crossPageDuplicates.flatMap((g) => g.urls).slice(0, 5),
+          note: "Multiple pages share identical or very similar content",
+        });
+      }
+
+      // SEO
+      if (rSeo?.meta?.seoHints) {
+        const h = rSeo.meta.seoHints;
+        const hasSeoIssue =
+          !h.titleLengthOk ||
+          !h.descriptionLengthOk ||
+          !h.hasCanonical ||
+          !h.hasH1 ||
+          !h.hasOpenGraph ||
+          !h.hasTwitterCard;
+          
+        if (hasSeoIssue) {
+          const seoProblems = [];
+
+          if (!h.hasViewport) seoProblems.push("viewport meta tag is missing");
+          if (!h.hasH1) seoProblems.push("no H1 heading on the page");
+          if (!h.titleLengthOk)
+            seoProblems.push(`title length is ${h.titleLength} characters`);
+          if (!h.descriptionLengthOk)
+            seoProblems.push(
+              `description length is ${h.descriptionLength} characters`
+            );
+          if (!h.hasOpenGraph) seoProblems.push("Open Graph tags are missing");
+          if (!h.hasTwitterCard) seoProblems.push("Twitter Card meta is missing");
+          if (!h.hasSchema) seoProblems.push("Structured Data (Schema.org) is missing");
+          if (typeof h.imageAltCoverage === "number" && h.imageAltCoverage < 0.5) {
+            seoProblems.push(
+              `image alt coverage is low (${Math.round(
+                h.imageAltCoverage * 100
+              )}%)`
+            );
+          }
+
+          issueDetails.push({
+            type: "seo",
+            urls: [url],
+            note: seoProblems.join("; "),
+          });
+        }
+      }
+
+      const aiMeta = {
+        urls: [url],
+        has404: issueDetails.some((i) => i.type === "404"),
+        hasDuplicate: issueDetails.some((i) => i.type === "duplicate"),
+        hasSeoIssues: issueDetails.some((i) => i.type === "seo"),
+        issueDetails,
+      };
+
       const report = buildReport({ r404, rDup, dupSummary, rSeo, url, lang });
-      await waitingMsg.edit(report);
+
+      let aiSummary = "";
+      try {
+        aiSummary = await summarizeWithAI(aiMeta, lang);
+      } catch (e) {
+        aiSummary = lang === "th"
+          ? "ไม่สามารถสรุปด้วย AI ได้ในขณะนี้"
+          : "AI summary is unavailable at the moment.";
+      }
+
+      const finalMessage =
+        report +
+        "\n\n🤖 **AI Summary**\n" +
+        "```" +
+        "\n" +
+        aiSummary +
+        "\n```";
+
+      await waitingMsg.edit(finalMessage);
     } catch (err) {
       console.error("bot messageCreate error:", err);
       try {
