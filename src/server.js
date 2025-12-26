@@ -471,6 +471,7 @@ function setupDiscordBot() {
   });
 
   client.on("messageCreate", async (message) => {
+
     try {
       if (message.author.bot) return;
 
@@ -658,14 +659,6 @@ function setupDiscordBot() {
             ? "ไม่สามารถสรุปด้วย AI ได้ในขณะนี้"
             : "AI summary is unavailable at the moment.";
       }
-
-      const finalMessage =
-        report +
-        "\n\n🤖 **AI Summary**\n" +
-        "```" +
-        "\n" +
-        aiSummary +
-        "\n```";
 
       // 1) แก้ข้อความแรก: report อย่างเดียว
       await waitingMsg.edit(report);
