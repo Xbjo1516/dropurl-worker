@@ -628,6 +628,17 @@ function setupDiscordBot() {
         issueDetails,
       };
 
+      await fetch(`${apiBase}/api/sync-user`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          discord_id: String(message.author.id),
+          discord_username: message.author.username,
+          avatar_url: message.author.displayAvatarURL(),
+          created_from: "discord",
+        }),
+      });
+
       // =======================
       // SAVE TO MAIN DB (checks + check_results)
       // =======================
