@@ -628,6 +628,31 @@ function setupDiscordBot() {
         issueDetails,
       };
 
+      // =======================
+      // SAVE TO MAIN DB (checks + check_results)
+      // =======================
+      await fetch(`${apiBase}/api/check`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          auth_user_id: `discord:${message.author.id}`, 
+          urls: [url],
+          rawInput: url,
+          source: "discord",
+
+          engineResult: {
+            has404: aiMeta.has404,
+            hasDuplicate: aiMeta.hasDuplicate,
+            hasSeoIssues: aiMeta.hasSeoIssues,
+            raw: {
+              workerResult: result,
+              issueDetails: aiMeta.issueDetails,
+              from: "discord",
+            },
+          },
+        }),
+      });
+
       const report = buildReport({ r404, rDup, dupSummary, rSeo, url, lang });
       let aiSummary = "";
 
