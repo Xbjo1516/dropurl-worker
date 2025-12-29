@@ -505,15 +505,67 @@ function setupDiscordBot() {
         return;
       }
 
-      // validate URL
       let url = urlRaw;
+
+      // ❌ ห้าม auto เติม protocol แล้ว
+      // ผู้ใช้ต้องพิมพ์ให้ถูกเอง
+      if (!/^https?:\/\/.+/i.test(url)) {
+        await message.reply(
+          lang === "th"
+            ? "❌ รูปแบบ URL ไม่ถูกต้อง กรุณาใช้ http:// หรือ https:// ให้ครบ"
+            : "❌ Invalid URL format. Please include http:// or https://"
+        );
+        return;
+      }
+
+      let parsed;
       try {
-        if (!/^https?:\/\//i.test(url)) {
-          url = `https://${url}`;
-        }
-        new URL(url);
+        parsed = new URL(url);
       } catch {
         await message.reply(t.invalidUrl);
+        return;
+      }
+
+      // ❌ hostname ต้องมี dot และต้องไม่ใช่แค่คำเดียว
+      if (
+        !parsed.hostname.includes(".") ||
+        parsed.hostname.startsWith("http")
+      ) {
+        await message.reply(
+          lang === "th"
+            ? "❌ URL นี้ไม่ถูกต้องหรือไม่มีอยู่จริง"
+            : "❌ This URL is invalid or does not exist"
+        );
+        return;
+      }
+
+      // ---------- Pre-check: URL reachable ----------
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 8000);
+
+        const res = await fetch(url, {
+          method: "HEAD",
+          redirect: "follow",
+          signal: controller.signal,
+        });
+
+        clearTimeout(timeout);
+
+        if (!res.ok) {
+          await message.reply(
+            lang === "th"
+              ? "❌ ไม่สามารถเข้าถึง URL นี้ได้ (เว็บไซต์ไม่ตอบสนองหรือไม่มีอยู่จริง)"
+              : "❌ This URL cannot be reached (site not responding or does not exist)."
+          );
+          return;
+        }
+      } catch {
+        await message.reply(
+          lang === "th"
+            ? "❌ ไม่สามารถเข้าถึง URL นี้ได้ กรุณาตรวจสอบว่า URL ถูกต้องและเว็บไซต์ยังเปิดใช้งานอยู่"
+            : "❌ Unable to reach this URL. Please check that it is correct and accessible."
+        );
         return;
       }
 
