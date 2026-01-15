@@ -622,12 +622,13 @@ function setupDiscordBot() {
         }
       }
 
-      // Duplicate
-      if (dupSummary?.detected && dupSummary.crossPageDuplicates?.length) {
+      // ✅ Duplicate (ให้ตรงกับ Web)
+      if (dupSummary?.detected) {
         issueDetails.push({
           type: "duplicate",
-          urls: dupSummary.crossPageDuplicates.flatMap((g) => g.urls).slice(0, 5),
-          note: "Multiple pages share identical or very similar content",
+          urls:
+            dupSummary.crossPageDuplicates?.flatMap((g) => g.urls).slice(0, 5) || [url],
+          note: "Duplicate content detected",
         });
       }
 
@@ -680,6 +681,18 @@ function setupDiscordBot() {
         issueDetails,
       };
 
+      // =======================
+      // Overall Status (same as Web)
+      // =======================
+      const overallStatus =
+        aiMeta.has404
+          ? "🔴 Critical – 404 issues found"
+          : aiMeta.hasDuplicate
+            ? "🟠 Minor Issues – Duplicate detected"
+            : aiMeta.hasSeoIssues
+              ? "🟡 Needs Attention – SEO issues"
+              : "🟢 Healthy – No major issues";
+
       await fetch(`${apiBase}/api/sync-user`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -702,8 +715,8 @@ function setupDiscordBot() {
           urls: [url],
           rawInput: url,
           source: "discord",
-
           engineResult: {
+            overallStatus, // ✅ เพิ่มบรรทัดนี้
             has404: aiMeta.has404,
             hasDuplicate: aiMeta.hasDuplicate,
             hasSeoIssues: aiMeta.hasSeoIssues,
